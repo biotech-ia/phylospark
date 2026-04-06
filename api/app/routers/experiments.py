@@ -4,9 +4,11 @@ from app.database import get_db
 from app.models import Experiment, ExperimentStatus, ExperimentLog
 from app.schemas import ExperimentCreate, ExperimentResponse, ExperimentList
 from app.storage import get_minio_client, download_file
+from app.pipeline import run_pipeline
 from datetime import datetime, timezone
 import json
 import logging
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -53,13 +55,18 @@ def trigger_pipeline(experiment_id: int, db: Session = Depends(get_db)):
     if not experiment:
         raise HTTPException(status_code=404, detail="Experiment not found")
 
-    if experiment.status not in (ExperimentStatus.CREATED, ExperimentStatus.FAILED):
+    if experiment.status not in (ExperimentStatus.CREATED, ExperimentStatus.FAILED, ExperimentStatus.CANCELLED):
         raise HTTPException(status_code=400, detail=f"Cannot run experiment in '{experiment.status}' state")
 
-    # TODO: Trigger Airflow DAG via REST API
+    # Set initial status and launch pipeline in background thread
     experiment.status = ExperimentStatus.DOWNLOADING
     db.commit()
     db.refresh(experiment)
+
+    # Run pipeline in a separate thread so the API returns immediately
+    thread = threading.Thread(target=run_pipeline, args=(experiment_id,), daemon=True)
+    thread.start()
+
     return experiment
 
 
