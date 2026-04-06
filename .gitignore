@@ -1,0 +1,50 @@
+# Dependencies
+node_modules/
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Environment
+.env
+*.env.local
+
+# Terraform
+terraform/.terraform/
+terraform/*.tfstate
+terraform/*.tfstate.backup
+terraform/*.tfvars
+terraform/.terraform.lock.hcl
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data
+*.fasta
+*.fa
+*.nwk
+*.aln
+data/
+
+# Docker
+docker-compose.override.yml
+
+# Build
+dist/
+build/
+*.log
+
+# Keys & Credentials
+*.pem
+*.key
+keys/
+CREDENTIALS.txt
+scripts/setup-github.py

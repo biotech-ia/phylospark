@@ -1,0 +1,94 @@
+name: Deploy AWS EC2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'api/**'
+      - 'frontend/**'
+      - 'airflow/**'
+      - 'bio/**'
+      - 'spark/**'
+      - 'docker-compose.prod.yml'
+      - 'Caddyfile'
+      - '.github/workflows/deploy-aws.yml'
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./api
+          file: ./api/Dockerfile
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/phylospark-api:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/phylospark-api:${{ github.sha }}
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/phylospark-frontend:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/phylospark-frontend:${{ github.sha }}
+
+      - name: Build and push Airflow image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./airflow/Dockerfile.prod
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/phylospark-airflow:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/phylospark-airflow:${{ github.sha }}
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Copy deployment files to EC2
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          source: docker-compose.prod.yml,Caddyfile
+          target: /opt/phylospark
+
+      - name: Deploy with Docker Compose
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd /opt/phylospark
+            cat > .env <<'EOF'
+            ${{ secrets.PROD_ENV_FILE }}
+            EOF
+            if docker compose version >/dev/null 2>&1; then
+              COMPOSE="docker compose"
+            else
+              COMPOSE="docker-compose"
+            fi
+            echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+            $COMPOSE -f docker-compose.prod.yml pull
+            $COMPOSE -f docker-compose.prod.yml up -d --remove-orphans
+            $COMPOSE -f docker-compose.prod.yml ps

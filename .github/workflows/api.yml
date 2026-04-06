@@ -1,0 +1,55 @@
+name: API - Build & Test
+
+on:
+  push:
+    paths: ['api/**']
+  pull_request:
+    paths: ['api/**']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: phylospark
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: phylospark_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U phylospark"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        working-directory: api
+        run: |
+          pip install -r requirements.txt
+          pip install pytest httpx
+
+      - name: Run tests
+        working-directory: api
+        env:
+          DATABASE_URL: postgresql://phylospark:test@localhost:5432/phylospark_test
+        run: pytest tests/ -v
+
+  build:
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        working-directory: api
+        run: docker build -t phylospark-api:${{ github.sha }} .

@@ -1,0 +1,135 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U phylospark"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    env_file: .env
+    restart: unless-stopped
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  minio-setup:
+    image: minio/mc:latest
+    env_file: .env
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set phylo http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD};
+      mc mb --ignore-existing phylo/phylospark;
+      mc mb --ignore-existing phylo/phylospark-raw;
+      mc mb --ignore-existing phylo/phylospark-clean;
+      mc mb --ignore-existing phylo/phylospark-features;
+      mc mb --ignore-existing phylo/phylospark-alignments;
+      mc mb --ignore-existing phylo/phylospark-trees;
+      mc mb --ignore-existing phylo/phylospark-reports;
+      echo 'Buckets created successfully';
+      "
+    restart: "no"
+
+  api:
+    image: ${DOCKERHUB_NAMESPACE}/phylospark-api:${IMAGE_TAG:-latest}
+    env_file: .env
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  airflow-init:
+    image: ${DOCKERHUB_NAMESPACE}/phylospark-airflow:${IMAGE_TAG:-latest}
+    env_file: .env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    volumes:
+      - airflow-logs:/opt/airflow/logs
+    entrypoint: >
+      /bin/bash -c "
+      airflow db migrate &&
+      airflow users create \
+        --username $${AIRFLOW_ADMIN_USER:-admin} \
+        --password $${AIRFLOW_ADMIN_PASSWORD:-admin} \
+        --firstname Admin \
+        --lastname User \
+        --role Admin \
+        --email admin@phylospark.local || true
+      "
+    restart: "no"
+
+  airflow-webserver:
+    image: ${DOCKERHUB_NAMESPACE}/phylospark-airflow:${IMAGE_TAG:-latest}
+    env_file: .env
+    command: airflow webserver --port 8080
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    volumes:
+      - airflow-logs:/opt/airflow/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/health || exit 1"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+
+  airflow-scheduler:
+    image: ${DOCKERHUB_NAMESPACE}/phylospark-airflow:${IMAGE_TAG:-latest}
+    env_file: .env
+    command: airflow scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    volumes:
+      - airflow-logs:/opt/airflow/logs
+
+  frontend:
+    image: ${DOCKERHUB_NAMESPACE}/phylospark-frontend:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      - api
+
+  caddy:
+    image: caddy:2.8-alpine
+    env_file: .env
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    depends_on:
+      - frontend
+      - api
+      - airflow-webserver
+      - minio
+
+volumes:
+  postgres-data:
+  minio-data:
+  airflow-logs:
+  caddy-data:
+  caddy-config:
