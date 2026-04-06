@@ -14,8 +14,11 @@ USER airflow
 COPY airflow/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-COPY airflow/dags /opt/airflow/dags
-COPY airflow/plugins /opt/airflow/plugins
-COPY airflow/config /opt/airflow/config
-COPY bio /opt/bio
-COPY spark/jobs /opt/spark/jobs
+# Create target dirs and copy application code
+RUN mkdir -p /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/bio /opt/spark/jobs
+
+COPY airflow/dags/ /opt/airflow/dags/
+COPY airflow/plugins/ /opt/airflow/plugins/
+COPY airflow/config/ /opt/airflow/config/
+COPY bio/ /opt/bio/
+COPY spark/jobs/ /opt/spark/jobs/
