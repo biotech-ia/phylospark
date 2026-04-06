@@ -9,13 +9,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     muscle \
     && rm -rf /var/lib/apt/lists/*
 
+RUN mkdir -p /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/bio /opt/spark/jobs \
+    && chown -R airflow:root /opt/bio /opt/spark
+
 USER airflow
 
 COPY airflow/requirements.txt /tmp/requirements.txt
 RUN pip install --no-cache-dir -r /tmp/requirements.txt
-
-# Create target dirs and copy application code
-RUN mkdir -p /opt/airflow/dags /opt/airflow/plugins /opt/airflow/config /opt/bio /opt/spark/jobs
 
 COPY airflow/dags/ /opt/airflow/dags/
 COPY airflow/plugins/ /opt/airflow/plugins/
