@@ -61,14 +61,14 @@ function cladeIds(n) { const r=[n.id]; n.ch.forEach(c => cladeIds(c).forEach(x =
    ═══════════════════════════════════════════════════════════════ */
 function layoutRect(root) {
   const md = treeDepth(root); let li = 0
-  ;(function w(n, d) {
-    n._d = d
-    if (n.ch.length === 0) { n._y = li++; n._x = d }
+  ;(function w(n, parentEnd) {
+    // Node position = end of its own branch (accumulated depth)
+    n._x = parentEnd + n.len
+    if (n.ch.length === 0) { n._y = li++ }
     else {
-      n.ch.forEach(c => w(c, d + n.len))
+      n.ch.forEach(c => w(c, n._x)) // children start where this node ends
       const ys = n.ch.map(c => c._y)
       n._y = (Math.min(...ys) + Math.max(...ys)) / 2
-      n._x = d
     }
   })(root, 0)
   return { lc: li, md }
@@ -347,28 +347,27 @@ export default function TreeViewer({ newick }) {
     const isSearchHit = searchMatches.has(n.id)
     const opacity = dimHL ? 0.08 : 1
 
-    /* ── Branches (MEGA-style proper elbow connectors) ── */
+    /* ── Branches (MEGA-style elbow connectors) ── */
     if (p) {
       const pp = xy(p)
       if (mode === 'rectangular') {
-        // Parent end-x = where parent's horizontal branch ends = parent._x + parent.len
-        const jx = PAD.l + (p._x + p.len) * scX
-        // Vertical connector from parent-y to child-y at junction-x
+        // Classic phylogram elbow: vertical at parent_x, horizontal to child_x
+        // Vertical: drop from parent_y to child_y at parent's x position
         elLines.push(
-          <line key={`v-${n.id}`} x1={jx} y1={pp.y} x2={jx} y2={pos.y}
+          <line key={`v-${n.id}`} x1={pp.x} y1={pp.y} x2={pp.x} y2={pos.y}
             stroke={color} strokeWidth={1.8} opacity={opacity}
             strokeLinecap="round" />
         )
-        // Horizontal connector from junction-x to child-x
+        // Horizontal: from parent_x to child_x at child's y level
         elLines.push(
-          <line key={`h-${n.id}`} x1={jx} y1={pos.y} x2={pos.x} y2={pos.y}
+          <line key={`h-${n.id}`} x1={pp.x} y1={pos.y} x2={pos.x} y2={pos.y}
             stroke={color} strokeWidth={1.8} opacity={opacity}
             strokeLinecap="round" />
         )
-        // Branch length label
+        // Branch length label (centered on horizontal segment)
         if (showLengths && n.len > 0) {
           elLenLabels.push(
-            <text key={`bl-${n.id}`} x={(jx + pos.x) / 2} y={pos.y - 7}
+            <text key={`bl-${n.id}`} x={(pp.x + pos.x) / 2} y={pos.y - 7}
               fontSize={9} fill={fgSub} textAnchor="middle" opacity={opacity}
               fontFamily="monospace">
               {n.len.toFixed(n.len < 0.01 ? 4 : 2)}
@@ -394,11 +393,10 @@ export default function TreeViewer({ newick }) {
       }
     }
 
-    // Root leading line (rectangular)
-    if (!p && mode === 'rectangular' && n.ch.length > 0) {
-      const endX = PAD.l + n.len * scX
+    // Root leading line (rectangular) - stub from x=0 to root position
+    if (!p && mode === 'rectangular') {
       elLines.push(
-        <line key="root-line" x1={PAD.l} y1={pos.y} x2={endX} y2={pos.y}
+        <line key="root-line" x1={PAD.l} y1={pos.y} x2={pos.x} y2={pos.y}
           stroke="#94a3b8" strokeWidth={1.8} strokeLinecap="round" />
       )
     }
