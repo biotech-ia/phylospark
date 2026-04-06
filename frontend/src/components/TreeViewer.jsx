@@ -351,18 +351,12 @@ export default function TreeViewer({ newick }) {
     if (p) {
       const pp = xy(p)
       if (mode === 'rectangular') {
-        // Classic phylogram elbow: vertical at parent_x, horizontal to child_x
-        // Vertical: drop from parent_y to child_y at parent's x position
+        // Single L-shaped path: vertical at parent_x then horizontal to child_x
         elLines.push(
-          <line key={`v-${n.id}`} x1={pp.x} y1={pp.y} x2={pp.x} y2={pos.y}
-            stroke={color} strokeWidth={1.8} opacity={opacity}
-            strokeLinecap="round" />
-        )
-        // Horizontal: from parent_x to child_x at child's y level
-        elLines.push(
-          <line key={`h-${n.id}`} x1={pp.x} y1={pos.y} x2={pos.x} y2={pos.y}
-            stroke={color} strokeWidth={1.8} opacity={opacity}
-            strokeLinecap="round" />
+          <path key={`br-${n.id}`}
+            d={`M ${pp.x} ${pp.y} L ${pp.x} ${pos.y} L ${pos.x} ${pos.y}`}
+            fill="none" stroke={color} strokeWidth={2} opacity={opacity}
+            strokeLinecap="round" strokeLinejoin="round" />
         )
         // Branch length label (centered on horizontal segment)
         if (showLengths && n.len > 0) {
