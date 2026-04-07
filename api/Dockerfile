@@ -7,7 +7,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     procps \
     && rm -rf /var/lib/apt/lists/*
 
-ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV JAVA_HOME=/usr/lib/jvm/default-java
 ENV SPARK_HOME=/usr/local/lib/python3.11/site-packages/pyspark
 ENV PYSPARK_PYTHON=python3
 
