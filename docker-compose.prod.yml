@@ -47,6 +47,8 @@ services:
   api:
     image: ${DOCKERHUB_NAMESPACE}/phylospark-api:${IMAGE_TAG:-latest}
     env_file: .env
+    environment:
+      - JAVA_HOME=/usr/lib/jvm/default-java
     restart: unless-stopped
     depends_on:
       postgres:
