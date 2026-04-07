@@ -1,8 +1,9 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import {
   Download, ZoomIn, ZoomOut, RotateCcw, Maximize, Search, X,
-  GitBranch, Type, Ruler, Grid3X3, Moon, Sun
+  GitBranch, Type, Ruler, Grid3X3, Moon, Sun, Tag, Sparkles
 } from 'lucide-react'
+import TaxonCard from './TaxonCard'
 
 /* ═══════════════════════════════════════════════════════════════
    PALETTE & CONSTANTS
@@ -165,7 +166,7 @@ function Btn({ children, active, onClick, title, className = '' }) {
 /* ═══════════════════════════════════════════════════════════════
    MAIN COMPONENT
    ═══════════════════════════════════════════════════════════════ */
-export default function TreeViewer({ newick }) {
+export default function TreeViewer({ newick, taxonMeta, insights, onTaxonAi, onTreeAi, aiLoading }) {
   const svgRef   = useRef(null)
   const wrapRef  = useRef(null)
   const innerRef = useRef(null)
@@ -181,6 +182,8 @@ export default function TreeViewer({ newick }) {
   const [wrapW, setWrapW]          = useState(900)
   const [hovered, setHovered]       = useState(null)
   const [hlClade, setHlClade]       = useState(null)
+  const [labelMode, setLabelMode]   = useState('accession')   // 'accession' | 'organism'
+  const [selectedTaxon, setSelectedTaxon] = useState(null)     // node for TaxonCard
 
   // SVG viewBox pan/zoom (proper approach — no CSS transform bugs)
   const [vb, setVb] = useState({ x: 0, y: 0, w: 900, h: 600 })
@@ -232,12 +235,17 @@ export default function TreeViewer({ newick }) {
     return t ? new Set(cladeIds(t.n)) : new Set()
   }, [hlClade, tree])
 
-  // Search matches
+  // Search matches (also search organism names)
   const searchMatches = useMemo(() => {
     if (!searchTerm || !tree) return new Set()
     const q = searchTerm.toLowerCase()
-    return new Set(tree.flat.filter(f => f.n.name.toLowerCase().includes(q)).map(f => f.n.id))
-  }, [searchTerm, tree])
+    return new Set(tree.flat.filter(f => {
+      if (f.n.name.toLowerCase().includes(q)) return true
+      const meta = taxonMeta?.[f.n.name]
+      if (meta?.organism?.toLowerCase().includes(q)) return true
+      return false
+    }).map(f => f.n.id))
+  }, [searchTerm, tree, taxonMeta])
 
   /* ── Pan/Zoom via viewBox (proper SVG approach) ── */
   const handleWheel = useCallback(e => {
@@ -413,30 +421,45 @@ export default function TreeViewer({ newick }) {
       )
     }
 
-    /* ── Leaf labels ── */
+    /* ── Leaf labels (clickable, name-toggled) ── */
     if (isLeaf && n.name) {
       const highlight = isSearchHit
+      const displayName = labelMode === 'organism' && taxonMeta?.[n.name]?.organism
+        ? taxonMeta[n.name].organism
+        : n.name
+      const isSelected = selectedTaxon?.id === n.id
+      const labelStyle = { cursor: 'pointer', transition: 'all 0.15s' }
+      const handleLabelClick = (e) => {
+        e.stopPropagation()
+        setSelectedTaxon(prev => prev?.id === n.id ? null : n)
+      }
       if (mode === 'radial') {
         const a = n._a, flip = a > Math.PI/2 && a < 3*Math.PI/2
         elLabels.push(
           <text key={`lb-${n.id}`} x={pos.x} y={pos.y}
             transform={`rotate(${(a*180/Math.PI)+(flip?180:0)}, ${pos.x}, ${pos.y})`}
             dx={flip ? -10 : 10} dy={4}
-            fontSize={12} fill={highlight ? '#facc15' : fg}
-            fontWeight={highlight ? 700 : 400}
+            fontSize={12} fill={isSelected ? '#2563eb' : highlight ? '#facc15' : fg}
+            fontWeight={highlight || isSelected ? 700 : 400}
             fontFamily="'Inter', system-ui, sans-serif"
-            textAnchor={flip ? 'end' : 'start'} opacity={opacity}>
-            {n.name}
+            textAnchor={flip ? 'end' : 'start'} opacity={opacity}
+            style={labelStyle}
+            textDecoration={isSelected ? 'underline' : 'none'}
+            onClick={handleLabelClick}>
+            {displayName}
           </text>
         )
       } else {
         elLabels.push(
           <text key={`lb-${n.id}`} x={pos.x + 10} y={pos.y + 4}
-            fontSize={12} fill={highlight ? '#facc15' : fg}
-            fontWeight={highlight ? 700 : 400}
+            fontSize={12} fill={isSelected ? '#2563eb' : highlight ? '#facc15' : fg}
+            fontWeight={highlight || isSelected ? 700 : 400}
             fontFamily="'Inter', system-ui, sans-serif"
-            opacity={opacity}>
-            {n.name}
+            opacity={opacity}
+            style={labelStyle}
+            textDecoration={isSelected ? 'underline' : 'none'}
+            onClick={handleLabelClick}>
+            {displayName}
           </text>
         )
       }
@@ -565,6 +588,9 @@ export default function TreeViewer({ newick }) {
         <Btn active={showNodes} onClick={() => setShowNodes(v => !v)} title="Toggle node dots">
           <Type size={13}/> Nodes
         </Btn>
+        <Btn active={labelMode === 'organism'} onClick={() => setLabelMode(v => v === 'accession' ? 'organism' : 'accession')} title="Toggle labels: accession codes vs organism names">
+          <Tag size={13}/> {labelMode === 'organism' ? 'Names' : 'Codes'}
+        </Btn>
         {mode === 'rectangular' && (
           <Btn active={showGrid} onClick={() => setShowGrid(v => !v)} title="Distance grid">
             <Grid3X3 size={13}/> Grid
@@ -588,6 +614,15 @@ export default function TreeViewer({ newick }) {
         <Btn onClick={() => svgRef.current && doExportPNG(svgRef.current, 'phylo-tree.png')}>
           <Download size={13}/> PNG
         </Btn>
+        {onTreeAi && (
+          <>
+            <div className={`w-px h-5 mx-1 ${dark ? 'bg-gray-700' : 'bg-gray-200'}`} />
+            <Btn onClick={() => onTreeAi(null)} title="AI analysis of the entire tree"
+              className={aiLoading ? 'opacity-50 pointer-events-none' : ''}>
+              <Sparkles size={13} className="text-amber-500" /> Analyze Tree
+            </Btn>
+          </>
+        )}
       </div>
 
       {/* ── SVG Viewport ── */}
@@ -599,7 +634,7 @@ export default function TreeViewer({ newick }) {
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
-        onClick={() => setHlClade(null)}>
+        onClick={() => { setHlClade(null); setSelectedTaxon(null) }}>
         <svg ref={svgRef}
           width="100%" height="100%"
           viewBox={`${vb.x} ${vb.y} ${vb.w} ${vb.h}`}
@@ -643,6 +678,18 @@ export default function TreeViewer({ newick }) {
             fill="none" stroke="#3b82f6" strokeWidth={Math.max(svgW/120, 3)}
             rx={4} opacity={0.7} />
         </svg>
+
+        {/* ── TaxonCard overlay ── */}
+        {selectedTaxon && (
+          <TaxonCard
+            taxon={selectedTaxon}
+            meta={taxonMeta?.[selectedTaxon.name]}
+            insights={insights}
+            loading={aiLoading}
+            onClose={() => setSelectedTaxon(null)}
+            onAiRequest={(accession, prompt) => onTaxonAi?.(accession, prompt)}
+          />
+        )}
       </div>
 
       {/* ── Footer ── */}
@@ -652,6 +699,7 @@ export default function TreeViewer({ newick }) {
           <span>🖱 Scroll = zoom</span>
           <span>✊ Drag = pan</span>
           <span>⬤ Click node = highlight clade</span>
+          <span>📝 Click label = taxon info</span>
         </div>
         <div className="flex items-center gap-3">
           <span>{tree.lc} taxa</span>

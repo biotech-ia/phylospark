@@ -1,8 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.models import Experiment, ExperimentStatus, ExperimentLog
-from app.schemas import ExperimentCreate, ExperimentResponse, ExperimentList
+from app.models import Experiment, ExperimentStatus, ExperimentLog, TaxonInsight
+from app.schemas import (
+    ExperimentCreate, ExperimentResponse, ExperimentList,
+    TaxonMetaResponse, TaxonMeta,
+    InsightListResponse, InsightResponse,
+)
 from app.storage import get_minio_client, download_file
 from app.pipeline import run_pipeline
 from datetime import datetime, timezone
@@ -187,3 +191,115 @@ def delete_experiment(experiment_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Experiment not found")
     db.delete(experiment)
     db.commit()
+
+
+@router.get("/{experiment_id}/taxon-metadata", response_model=TaxonMetaResponse)
+def get_taxon_metadata(experiment_id: int, db: Session = Depends(get_db)):
+    """Fetch organism metadata for each taxon from NCBI or cached metadata."""
+    experiment = db.query(Experiment).filter(Experiment.id == experiment_id).first()
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    if experiment.status != ExperimentStatus.COMPLETE:
+        raise HTTPException(status_code=400, detail="Experiment is not complete")
+
+    # Return cached metadata if available
+    if experiment.metadata_ and "taxon_meta" in experiment.metadata_:
+        taxa = {}
+        for acc, meta in experiment.metadata_["taxon_meta"].items():
+            taxa[acc] = TaxonMeta(**meta)
+        return TaxonMetaResponse(taxa=taxa)
+
+    # Fetch from NCBI and cache
+    from Bio import Entrez, SeqIO
+    from app.config import get_settings
+    import io
+
+    settings = get_settings()
+    Entrez.email = settings.ncbi_email or "phylospark@example.com"
+    if settings.ncbi_api_key:
+        Entrez.api_key = settings.ncbi_api_key
+
+    # Get accessions from FASTA in MinIO
+    accessions = []
+    try:
+        client = get_minio_client()
+        fasta_raw = download_file(client, "phylospark-raw", f"experiments/{experiment_id}/sequences_clean.fasta")
+        records = list(SeqIO.parse(io.StringIO(fasta_raw.decode("utf-8")), "fasta"))
+        accessions = [r.id for r in records]
+    except Exception:
+        # Fallback: try selected_sequences
+        accessions = experiment.selected_sequences or []
+
+    if not accessions:
+        return TaxonMetaResponse(taxa={})
+
+    taxa = {}
+    try:
+        # Fetch summaries from NCBI in batch
+        handle = Entrez.esummary(db="protein", id=",".join(accessions[:200]))
+        summaries = Entrez.read(handle)
+        handle.close()
+
+        for item in summaries:
+            acc = item.get("AccessionVersion", item.get("Caption", ""))
+            title = item.get("Title", "")
+            org = item.get("Organism", "")
+            if not org and "[" in title:
+                org = title.rsplit("[", 1)[-1].rstrip("]")
+            # Extract protein name from title (before the organism bracket)
+            protein_name = title.split("[")[0].strip() if "[" in title else title
+            length = int(item.get("Length", item.get("Slen", 0)))
+            tax_id = str(item.get("TaxId", ""))
+
+            taxa[acc] = TaxonMeta(
+                accession=acc,
+                organism=org or "Unknown",
+                title=title,
+                taxonomy=tax_id,
+                protein_name=protein_name,
+                length=length,
+            )
+    except Exception as e:
+        logger.warning(f"NCBI metadata fetch failed for exp {experiment_id}: {e}")
+        # Build minimal metadata from FASTA headers
+        try:
+            client = get_minio_client()
+            fasta_raw = download_file(client, "phylospark-raw", f"experiments/{experiment_id}/sequences_clean.fasta")
+            for rec in SeqIO.parse(io.StringIO(fasta_raw.decode("utf-8")), "fasta"):
+                title = rec.description
+                org = ""
+                if "[" in title:
+                    org = title.rsplit("[", 1)[-1].rstrip("]")
+                protein_name = title.split("[")[0].strip() if "[" in title else title
+                taxa[rec.id] = TaxonMeta(
+                    accession=rec.id, organism=org or "Unknown",
+                    title=title, protein_name=protein_name,
+                    length=len(rec.seq),
+                )
+        except Exception:
+            pass
+
+    # Cache in metadata
+    meta = experiment.metadata_ or {}
+    meta["taxon_meta"] = {acc: t.model_dump() for acc, t in taxa.items()}
+    experiment.metadata_ = meta
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(experiment, "metadata_")
+    db.commit()
+
+    return TaxonMetaResponse(taxa=taxa)
+
+
+@router.get("/{experiment_id}/insights", response_model=InsightListResponse)
+def get_insights(experiment_id: int, db: Session = Depends(get_db)):
+    """Get all saved AI insights for an experiment."""
+    experiment = db.query(Experiment).filter(Experiment.id == experiment_id).first()
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    insights = (
+        db.query(TaxonInsight)
+        .filter(TaxonInsight.experiment_id == experiment_id)
+        .order_by(TaxonInsight.created_at.desc())
+        .all()
+    )
+    return InsightListResponse(insights=insights)

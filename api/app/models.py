@@ -45,3 +45,16 @@ class ExperimentLog(Base):
     step = Column(String(100), nullable=True, default="")
     message = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class TaxonInsight(Base):
+    __tablename__ = "taxon_insights"
+
+    id = Column(Integer, primary_key=True, index=True)
+    experiment_id = Column(Integer, ForeignKey("experiments.id", ondelete="CASCADE"), nullable=False, index=True)
+    accession = Column(String(50), nullable=True)  # NULL = tree-level insight
+    scope = Column(String(20), nullable=False, default="taxon")  # "taxon" or "tree"
+    user_prompt = Column(Text, nullable=True)
+    ai_response = Column(Text, nullable=False)
+    model_used = Column(String(100), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

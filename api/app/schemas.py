@@ -94,3 +94,39 @@ class AIAlignmentParamsRequest(BaseModel):
 class AIAlignmentParamsResponse(BaseModel):
     params: AlignmentParams
     reasoning: str
+
+
+# ── Taxon metadata & AI insights ──
+
+class TaxonMeta(BaseModel):
+    accession: str
+    organism: str = ""
+    title: str = ""
+    taxonomy: str = ""
+    protein_name: str = ""
+    length: int = 0
+
+class TaxonMetaResponse(BaseModel):
+    taxa: dict[str, TaxonMeta]
+
+class TaxonInsightRequest(BaseModel):
+    accession: str
+    user_prompt: Optional[str] = None
+
+class TreeInsightRequest(BaseModel):
+    user_prompt: Optional[str] = None
+
+class InsightResponse(BaseModel):
+    id: int
+    experiment_id: int
+    accession: Optional[str]
+    scope: str
+    user_prompt: Optional[str]
+    ai_response: str
+    model_used: Optional[str]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+class InsightListResponse(BaseModel):
+    insights: list[InsightResponse]

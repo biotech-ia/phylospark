@@ -1,7 +1,8 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import { experiments } from '../api'
+import { experiments, ai } from '../api'
 import TreeViewer from '../components/TreeViewer'
+import TreeInsightPanel from '../components/TreeInsightPanel'
 import AlignmentViewer from '../components/AlignmentViewer'
 import StatsCharts from '../components/StatsCharts'
 import LogViewer from '../components/LogViewer'
@@ -31,6 +32,9 @@ export default function ExperimentDetail() {
   const [treeData, setTreeData] = useState(null)
   const [alignmentData, setAlignmentData] = useState(null)
   const [statsData, setStatsData] = useState(null)
+  const [taxonMeta, setTaxonMeta] = useState(null)
+  const [insightsList, setInsightsList] = useState([])
+  const [aiLoading, setAiLoading] = useState(false)
 
   useEffect(() => {
     experiments.get(id).then((res) => {
@@ -57,6 +61,37 @@ export default function ExperimentDetail() {
   }, [exp, id])
 
   useEffect(() => { loadResults() }, [loadResults])
+
+  // Load taxon metadata & saved insights when tree tab activates
+  useEffect(() => {
+    if (activeTab !== 'tree' || exp?.status !== 'complete') return
+    experiments.getTaxonMeta(id).then(r => setTaxonMeta(r.data.taxa)).catch(() => {})
+    experiments.getInsights(id).then(r => setInsightsList(r.data.insights || [])).catch(() => {})
+  }, [activeTab, exp?.status, id])
+
+  const handleTaxonAi = async (accession, userPrompt) => {
+    setAiLoading(true)
+    try {
+      const res = await ai.taxonInsight(id, { accession, user_prompt: userPrompt })
+      setInsightsList(prev => [res.data, ...prev])
+    } catch (e) {
+      console.error('Taxon AI failed:', e)
+    } finally {
+      setAiLoading(false)
+    }
+  }
+
+  const handleTreeAi = async (userPrompt) => {
+    setAiLoading(true)
+    try {
+      const res = await ai.treeInsight(id, { user_prompt: userPrompt })
+      setInsightsList(prev => [res.data, ...prev])
+    } catch (e) {
+      console.error('Tree AI failed:', e)
+    } finally {
+      setAiLoading(false)
+    }
+  }
 
   const handleRun = async () => {
     const res = await experiments.run(id)
@@ -188,9 +223,23 @@ export default function ExperimentDetail() {
           <div className="bg-white rounded-xl border shadow-sm p-6">
             <h2 className="text-lg font-semibold text-gray-800 mb-4">Interactive Phylogenetic Tree</h2>
             {treeData?.newick ? (
-              <TreeViewer newick={treeData.newick} />
+              <TreeViewer
+                newick={treeData.newick}
+                taxonMeta={taxonMeta}
+                insights={insightsList}
+                onTaxonAi={handleTaxonAi}
+                onTreeAi={handleTreeAi}
+                aiLoading={aiLoading}
+              />
             ) : (
               <PlaceholderMessage message="Tree data not available yet" />
+            )}
+            {treeData?.newick && (
+              <TreeInsightPanel
+                insights={insightsList}
+                onTreeAi={handleTreeAi}
+                loading={aiLoading}
+              />
             )}
             {treeData?.newick && (
               <details className="mt-4">

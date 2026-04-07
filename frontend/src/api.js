@@ -16,6 +16,8 @@ export const experiments = {
   getAlignment: (id) => api.get(`/experiments/${id}/alignment`),
   getStats: (id) => api.get(`/experiments/${id}/stats`),
   getLogs: (id) => api.get(`/experiments/${id}/logs`),
+  getTaxonMeta: (id) => api.get(`/experiments/${id}/taxon-metadata`),
+  getInsights: (id) => api.get(`/experiments/${id}/insights`),
 }
 
 export const ncbi = {
@@ -25,6 +27,8 @@ export const ncbi = {
 export const ai = {
   recommendSequences: (data) => api.post('/ai/recommend-sequences', data),
   recommendAlignmentParams: (data) => api.post('/ai/recommend-alignment-params', data),
+  taxonInsight: (experimentId, data) => api.post(`/ai/experiments/${experimentId}/taxon-insight`, data),
+  treeInsight: (experimentId, data) => api.post(`/ai/experiments/${experimentId}/tree-insight`, data),
 }
 
 export function connectExperimentWS(experimentId, onMessage) {
