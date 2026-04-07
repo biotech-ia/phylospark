@@ -239,6 +239,7 @@ export default function ExperimentDetail() {
                 insights={insightsList}
                 onTreeAi={handleTreeAi}
                 loading={aiLoading}
+                taxonMeta={taxonMeta}
               />
             )}
             {treeData?.newick && (

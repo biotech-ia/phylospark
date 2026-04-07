@@ -679,18 +679,19 @@ export default function TreeViewer({ newick, taxonMeta, insights, onTaxonAi, onT
             rx={4} opacity={0.7} />
         </svg>
 
-        {/* ── TaxonCard overlay ── */}
-        {selectedTaxon && (
-          <TaxonCard
-            taxon={selectedTaxon}
-            meta={taxonMeta?.[selectedTaxon.name]}
-            insights={insights}
-            loading={aiLoading}
-            onClose={() => setSelectedTaxon(null)}
-            onAiRequest={(accession, prompt) => onTaxonAi?.(accession, prompt)}
-          />
-        )}
       </div>
+
+      {/* ── TaxonCard overlay (outside viewport to prevent click propagation) ── */}
+      {selectedTaxon && (
+        <TaxonCard
+          taxon={selectedTaxon}
+          meta={taxonMeta?.[selectedTaxon.name]}
+          insights={insights}
+          loading={aiLoading}
+          onClose={() => setSelectedTaxon(null)}
+          onAiRequest={(accession, prompt) => onTaxonAi?.(accession, prompt)}
+        />
+      )}
 
       {/* ── Footer ── */}
       <div className={`px-4 py-2 border-t flex flex-wrap items-center justify-between gap-2 text-[11px]
