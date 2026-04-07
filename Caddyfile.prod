@@ -13,6 +13,11 @@ phylo.automation.com.mx {
     reverse_proxy api:8000
   }
 
+  handle /spark/* {
+    uri strip_prefix /spark
+    reverse_proxy api:4040
+  }
+
   handle {
     reverse_proxy frontend:80
   }
@@ -36,9 +41,4 @@ minio.phylo.automation.com.mx {
 s3.phylo.automation.com.mx {
   encode zstd gzip
   reverse_proxy minio:9000
-}
-
-spark.phylo.automation.com.mx {
-  encode zstd gzip
-  reverse_proxy api:4040
 }

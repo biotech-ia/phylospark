@@ -204,11 +204,13 @@ def step_features(experiment_id: int, records: list) -> list:
         .config("spark.driver.memory", "512m") \
         .config("spark.ui.enabled", "true") \
         .config("spark.ui.port", "4040") \
+        .config("spark.ui.proxyBase", "/spark") \
         .config("spark.sql.shuffle.partitions", "4") \
         .getOrCreate()
 
     sc = spark.sparkContext
     _log(experiment_id, f"✅ SparkSession created | App: {sc.appName} | Master: {sc.master} | Cores: {sc.defaultParallelism}", "features", "success")
+    _log(experiment_id, "🌐 Spark UI available at /spark/ while pipeline runs", "features")
 
     try:
         # Prepare sequence data for Spark
@@ -324,6 +326,7 @@ def step_distances(experiment_id: int, records: list, features: list) -> list:
         .config("spark.driver.memory", "512m") \
         .config("spark.ui.enabled", "true") \
         .config("spark.ui.port", "4040") \
+        .config("spark.ui.proxyBase", "/spark") \
         .config("spark.sql.shuffle.partitions", "4") \
         .getOrCreate()
 
