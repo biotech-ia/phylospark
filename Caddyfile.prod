@@ -1,8 +1,8 @@
 {
-  email {$ACME_EMAIL}
+  email andres@automation.com.mx
 }
 
-phylo.{$DOMAIN} {
+phylo.automation.com.mx {
   encode zstd gzip
 
   handle /api/* {
@@ -18,27 +18,27 @@ phylo.{$DOMAIN} {
   }
 }
 
-api.phylo.{$DOMAIN} {
+api.phylo.automation.com.mx {
   encode zstd gzip
   reverse_proxy api:8000
 }
 
-airflow.phylo.{$DOMAIN} {
+airflow.phylo.automation.com.mx {
   encode zstd gzip
   reverse_proxy airflow-webserver:8080
 }
 
-minio.phylo.{$DOMAIN} {
+minio.phylo.automation.com.mx {
   encode zstd gzip
   reverse_proxy minio:9001
 }
 
-s3.phylo.{$DOMAIN} {
+s3.phylo.automation.com.mx {
   encode zstd gzip
   reverse_proxy minio:9000
 }
 
-spark.phylo.{$DOMAIN} {
+spark.phylo.automation.com.mx {
   encode zstd gzip
   reverse_proxy api:4040
 }

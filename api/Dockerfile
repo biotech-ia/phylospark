@@ -1,8 +1,15 @@
 FROM python:3.11-slim
 
-# Install MAFFT for multiple sequence alignment
-RUN apt-get update && apt-get install -y --no-install-recommends mafft && \
-    rm -rf /var/lib/apt/lists/*
+# Install MAFFT + Java (required for PySpark)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    mafft \
+    default-jdk-headless \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV JAVA_HOME=/usr/lib/jvm/java-17-openjdk-amd64
+ENV SPARK_HOME=/usr/local/lib/python3.11/site-packages/pyspark
+ENV PYSPARK_PYTHON=python3
 
 WORKDIR /app
 

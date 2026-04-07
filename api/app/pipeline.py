@@ -184,94 +184,233 @@ def step_validate(experiment_id: int, fasta_data: str) -> list:
     return valid
 
 
-# ─── Step 3: Feature engineering ──────────────────────────────
+# ─── Step 3: Feature engineering (PySpark) ───────────────────
 def step_features(experiment_id: int, records: list) -> list:
-    """Compute per-sequence features. Returns list of feature dicts."""
+    """Compute per-sequence features using Apache Spark for distributed processing."""
     _set_status(experiment_id, ExperimentStatus.PROCESSING)
-    _log(experiment_id, f"Computing features for {len(records)} sequences...", "features")
+    _log(experiment_id, f"🔥 Starting Spark Feature Engineering for {len(records)} sequences...", "features")
+    _log(experiment_id, "ENGINE: Apache Spark (local mode) | Initializing SparkSession...", "features")
 
-    features = []
-    for i, record in enumerate(records):
-        seq_str = str(record.seq).upper().replace("*", "").replace("-", "").replace("X", "")
-        if len(seq_str) < 10:
-            continue
+    import time
+    from pyspark.sql import SparkSession
+    from pyspark.sql.types import StructType, StructField, StringType, IntegerType, FloatType
 
-        # Truncate seq_id for display
-        seq_id = record.id[:20] if len(record.id) > 20 else record.id
+    t0 = time.time()
 
-        feat = {"seq_id": seq_id, "length": len(seq_str)}
+    # Create SparkSession
+    spark = SparkSession.builder \
+        .appName(f"PhyloSpark-Features-Exp{experiment_id}") \
+        .master("local[*]") \
+        .config("spark.driver.memory", "512m") \
+        .config("spark.ui.enabled", "true") \
+        .config("spark.ui.port", "4040") \
+        .config("spark.sql.shuffle.partitions", "4") \
+        .getOrCreate()
 
-        # Amino acid composition
-        for aa in AMINO_ACIDS:
-            feat[f"aa_{aa}"] = round(seq_str.count(aa) / len(seq_str), 4) if len(seq_str) > 0 else 0
+    sc = spark.sparkContext
+    _log(experiment_id, f"✅ SparkSession created | App: {sc.appName} | Master: {sc.master} | Cores: {sc.defaultParallelism}", "features", "success")
 
-        # Hydrophobic and charged fractions
-        feat["hydrophobic_frac"] = round(
-            sum(1 for c in seq_str if c in HYDROPHOBIC) / len(seq_str), 4
-        )
-        feat["charged_frac"] = round(
-            sum(1 for c in seq_str if c in CHARGED) / len(seq_str), 4
-        )
+    try:
+        # Prepare sequence data for Spark
+        seq_data = []
+        for record in records:
+            seq_str = str(record.seq).upper().replace("*", "").replace("-", "").replace("X", "")
+            if len(seq_str) >= 10:
+                seq_id = record.id[:20] if len(record.id) > 20 else record.id
+                seq_data.append((seq_id, seq_str))
 
-        # Molecular weight estimate (avg ~110 Da per amino acid for rough calc)
-        try:
-            analysis = ProteinAnalysis(seq_str)
-            feat["molecular_weight"] = round(analysis.molecular_weight(), 1)
-            feat["isoelectric_point"] = round(analysis.isoelectric_point(), 2)
-        except Exception:
-            feat["molecular_weight"] = round(len(seq_str) * 110.0, 1)
+        num_seqs = len(seq_data)
+        num_partitions = min(max(num_seqs // 25, 2), 8)  # 2-8 partitions
+        _log(experiment_id, f"📊 Distributing {num_seqs} sequences across {num_partitions} Spark partitions", "features")
+
+        # Create RDD and distribute computation
+        seq_rdd = sc.parallelize(seq_data, num_partitions)
+        _log(experiment_id, f"📦 RDD created: {seq_rdd.getNumPartitions()} partitions | {seq_rdd.count()} records", "features")
+
+        # Map: compute features per sequence (distributed)
+        def compute_features_spark(item):
+            seq_id, seq_str = item
+            length = len(seq_str)
+            from collections import Counter
+            counts = Counter(seq_str)
+            aa_list = list("ACDEFGHIKLMNPQRSTVWY")
+            hydrophobic_set = set("AILMFWV")
+            charged_set = set("DEKRH")
+
+            feat = {"seq_id": seq_id, "length": length}
+            for aa in aa_list:
+                feat[f"aa_{aa}"] = round(counts.get(aa, 0) / max(length, 1), 4)
+            feat["hydrophobic_frac"] = round(sum(1 for c in seq_str if c in hydrophobic_set) / max(length, 1), 4)
+            feat["charged_frac"] = round(sum(1 for c in seq_str if c in charged_set) / max(length, 1), 4)
+            feat["molecular_weight"] = round(length * 110.0, 1)
             feat["isoelectric_point"] = 0.0
+            # k-mer computation (additional Spark-specific feature)
+            kmers_2 = Counter()
+            for i in range(len(seq_str) - 1):
+                kmers_2[seq_str[i:i+2]] += 1
+            feat["unique_2mers"] = len(kmers_2)
+            return feat
 
-        features.append(feat)
+        t_map_start = time.time()
+        features_rdd = seq_rdd.map(compute_features_spark)
+        features = features_rdd.collect()  # Action triggers computation
+        t_map_end = time.time()
 
-        if (i + 1) % 10 == 0:
-            _log(experiment_id, f"Processed features for {i + 1}/{len(records)} sequences", "features")
+        map_time = round(t_map_end - t_map_start, 2)
+        _log(experiment_id, f"⚡ Spark MAP completed: {len(features)} features in {map_time}s | {num_partitions} partitions", "features", "success")
 
-    # Upload features to MinIO
-    client = get_minio_client()
-    key = f"experiments/{experiment_id}/features.json"
-    upload_file(client, "phylospark-features", key, json.dumps(features, indent=2).encode(), "application/json")
-    _log(experiment_id, f"Feature engineering complete: {len(features)} sequences analyzed", "features", "success")
+        # Spark DataFrame for statistics
+        df = spark.createDataFrame(features)
+        row_count = df.count()
+        _log(experiment_id, f"📋 Spark DataFrame: {row_count} rows × {len(df.columns)} columns", "features")
 
-    return features
+        # Compute aggregate statistics with Spark SQL
+        df.createOrReplaceTempView("features")
+        stats = spark.sql("""
+            SELECT
+                COUNT(*) as total_sequences,
+                ROUND(AVG(length), 1) as avg_length,
+                MIN(length) as min_length,
+                MAX(length) as max_length,
+                ROUND(AVG(hydrophobic_frac), 4) as avg_hydrophobic,
+                ROUND(AVG(charged_frac), 4) as avg_charged,
+                ROUND(AVG(unique_2mers), 0) as avg_2mers
+            FROM features
+        """).collect()[0]
+
+        _log(experiment_id,
+             f"📈 Spark SQL Stats: {stats.total_sequences} seqs | "
+             f"Avg length: {stats.avg_length} | "
+             f"Avg hydrophobic: {stats.avg_hydrophobic} | "
+             f"Avg 2-mers: {stats.avg_2mers}",
+             "features", "success")
+
+        # Upload features to MinIO
+        client = get_minio_client()
+        key = f"experiments/{experiment_id}/features.json"
+        upload_file(client, "phylospark-features", key, json.dumps(features, indent=2).encode(), "application/json")
+
+        total_time = round(time.time() - t0, 2)
+        _log(experiment_id,
+             f"🏁 Spark Feature Engineering COMPLETE: {len(features)} sequences | "
+             f"{num_partitions} partitions | "
+             f"Total: {total_time}s (map: {map_time}s)",
+             "features", "success")
+
+        return features
+
+    finally:
+        spark.stop()
+        _log(experiment_id, "SparkSession stopped", "features")
 
 
-# ─── Step 4: Pairwise distance matrix ────────────────────────
+# ─── Step 4: Pairwise distance matrix (PySpark) ──────────────
 def step_distances(experiment_id: int, records: list, features: list) -> list:
-    """Compute pairwise Euclidean distance based on AA composition features."""
-    _log(experiment_id, "Computing pairwise distance matrix...", "distances")
+    """Compute pairwise Euclidean distance using Apache Spark."""
+    _log(experiment_id, "🔥 Starting Spark Distance Matrix computation...", "distances")
+    _log(experiment_id, "ENGINE: Apache Spark (local mode) | Creating SparkSession...", "distances")
 
+    import time
     import math
+    from pyspark.sql import SparkSession
+    from pyspark.sql import functions as F
+    from itertools import combinations
 
-    # Build feature vectors (AA composition + hydrophobic + charged)
-    vectors = {}
-    for feat in features:
-        vec = [feat.get(f"aa_{aa}", 0) for aa in AMINO_ACIDS]
-        vec.append(feat.get("hydrophobic_frac", 0))
-        vec.append(feat.get("charged_frac", 0))
-        vectors[feat["seq_id"]] = vec
+    t0 = time.time()
 
-    seq_ids = list(vectors.keys())
-    distances = []
+    spark = SparkSession.builder \
+        .appName(f"PhyloSpark-Distances-Exp{experiment_id}") \
+        .master("local[*]") \
+        .config("spark.driver.memory", "512m") \
+        .config("spark.ui.enabled", "true") \
+        .config("spark.ui.port", "4040") \
+        .config("spark.sql.shuffle.partitions", "4") \
+        .getOrCreate()
 
-    for i in range(len(seq_ids)):
-        for j in range(i + 1, len(seq_ids)):
-            va = vectors[seq_ids[i]]
-            vb = vectors[seq_ids[j]]
-            dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(va, vb)))
-            distances.append({
-                "seq_a": seq_ids[i],
-                "seq_b": seq_ids[j],
-                "euclidean_distance": round(dist, 6),
-            })
+    sc = spark.sparkContext
+    n = len(features)
+    total_pairs = n * (n - 1) // 2
+    _log(experiment_id, f"✅ SparkSession created | {n} sequences → {total_pairs} pairwise comparisons", "distances", "success")
 
-    # Upload to MinIO
-    client = get_minio_client()
-    key = f"experiments/{experiment_id}/distances.json"
-    upload_file(client, "phylospark-features", key, json.dumps(distances, indent=2).encode(), "application/json")
-    _log(experiment_id, f"Distance matrix computed: {len(distances)} pairs", "distances", "success")
+    try:
+        # Build feature vectors
+        vectors = {}
+        for feat in features:
+            vec = [feat.get(f"aa_{aa}", 0) for aa in AMINO_ACIDS]
+            vec.append(feat.get("hydrophobic_frac", 0))
+            vec.append(feat.get("charged_frac", 0))
+            vectors[feat["seq_id"]] = vec
 
-    return distances
+        seq_ids = list(vectors.keys())
+
+        # Generate all pairs and distribute with Spark
+        pairs = list(combinations(range(n), 2))
+        num_partitions = min(max(len(pairs) // 100, 2), 8)
+        _log(experiment_id, f"📊 Distributing {len(pairs)} pairs across {num_partitions} Spark partitions", "distances")
+
+        # Broadcast vectors for efficient access
+        bc_vectors = sc.broadcast(vectors)
+        bc_seq_ids = sc.broadcast(seq_ids)
+
+        pairs_rdd = sc.parallelize(pairs, num_partitions)
+        _log(experiment_id, f"📦 RDD created: {pairs_rdd.getNumPartitions()} partitions | Broadcast vectors: {len(seq_ids)} × {len(next(iter(vectors.values())))} dims", "distances")
+
+        # Map: compute distance per pair (distributed)
+        def compute_distance(pair):
+            i, j = pair
+            vecs = bc_vectors.value
+            ids = bc_seq_ids.value
+            va = vecs[ids[i]]
+            vb = vecs[ids[j]]
+            dist = sum((a - b) ** 2 for a, b in zip(va, vb)) ** 0.5
+            return {"seq_a": ids[i], "seq_b": ids[j], "euclidean_distance": round(dist, 6)}
+
+        t_map_start = time.time()
+        distances_rdd = pairs_rdd.map(compute_distance)
+        distances = distances_rdd.collect()
+        t_map_end = time.time()
+
+        map_time = round(t_map_end - t_map_start, 2)
+        _log(experiment_id, f"⚡ Spark MAP completed: {len(distances)} distance pairs in {map_time}s", "distances", "success")
+
+        # Create DataFrame and compute summary statistics
+        dist_df = spark.createDataFrame(distances)
+        dist_df.createOrReplaceTempView("distances")
+
+        stats = spark.sql("""
+            SELECT
+                COUNT(*) as total_pairs,
+                ROUND(AVG(euclidean_distance), 6) as avg_distance,
+                ROUND(MIN(euclidean_distance), 6) as min_distance,
+                ROUND(MAX(euclidean_distance), 6) as max_distance,
+                ROUND(STDDEV(euclidean_distance), 6) as std_distance
+            FROM distances
+        """).collect()[0]
+
+        _log(experiment_id,
+             f"📈 Spark SQL Stats: {stats.total_pairs} pairs | "
+             f"Avg dist: {stats.avg_distance} | "
+             f"Range: [{stats.min_distance}, {stats.max_distance}] | "
+             f"StdDev: {stats.std_distance}",
+             "distances", "success")
+
+        # Upload to MinIO
+        client = get_minio_client()
+        key = f"experiments/{experiment_id}/distances.json"
+        upload_file(client, "phylospark-features", key, json.dumps(distances, indent=2).encode(), "application/json")
+
+        total_time = round(time.time() - t0, 2)
+        _log(experiment_id,
+             f"🏁 Spark Distance Matrix COMPLETE: {len(distances)} pairs | "
+             f"{num_partitions} partitions | "
+             f"Total: {total_time}s (map: {map_time}s)",
+             "distances", "success")
+
+        return distances
+
+    finally:
+        spark.stop()
+        _log(experiment_id, "SparkSession stopped", "distances")
 
 
 # ─── Step 5: Multiple Sequence Alignment ─────────────────────

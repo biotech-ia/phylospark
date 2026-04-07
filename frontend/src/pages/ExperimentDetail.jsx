@@ -5,6 +5,7 @@ import TreeViewer from '../components/TreeViewer'
 import AlignmentViewer from '../components/AlignmentViewer'
 import StatsCharts from '../components/StatsCharts'
 import LogViewer from '../components/LogViewer'
+import PipelineMonitor from '../components/PipelineMonitor'
 
 const PIPELINE_STEPS = [
   { key: 'downloading', label: 'Downloading Sequences', icon: '📥' },
@@ -176,7 +177,7 @@ export default function ExperimentDetail() {
 
       {/* Tab Content */}
       <div className="min-h-[400px]">
-        {activeTab === 'pipeline' && <PipelineTab exp={exp} currentStepIndex={currentStepIndex} />}
+        {activeTab === 'pipeline' && <PipelineMonitor experimentId={parseInt(id)} status={exp.status} />}
         {activeTab === 'logs' && (
           <div>
             <h2 className="text-lg font-semibold text-gray-800 mb-4">Real-Time Pipeline Logs</h2>

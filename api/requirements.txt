@@ -11,3 +11,5 @@ httpx==0.27.0
 biopython==1.84
 openai==1.35.0
 websockets==12.0
+pyspark==3.5.1
+numpy==1.26.4
