@@ -9,8 +9,7 @@ from app.schemas import (
     AdvancedReportRequest, AdvancedReportResponse, DOIReference,
     AlignmentChatRequest, AlignmentChatResponse,
     AlignmentReportRequest, StatsReportRequest,
-    ChartAnalysisRequest, ChartAnalysisResponse,
-    CachedAnalysisResponse, ModelInfo,
+    ChartAnalysisRequest, CachedAnalysisResponse, ModelInfo,
 )
 from app.config import get_settings
 from app.storage import get_minio_client, download_file
