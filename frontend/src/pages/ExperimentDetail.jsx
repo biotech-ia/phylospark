@@ -66,11 +66,24 @@ export default function ExperimentDetail() {
 
   useEffect(() => { loadResults() }, [loadResults])
 
-  // Load taxon metadata & saved insights when tree tab activates
+  // Load saved insights and taxon metadata when experiment is complete
+  useEffect(() => {
+    if (exp?.status !== 'complete') return
+    experiments.getInsights(id).then(r => setInsightsList(r.data.insights || [])).catch(() => {})
+  }, [exp?.status, id])
+
+  // Restore cached reports from saved insights
+  useEffect(() => {
+    if (!insightsList.length) return
+    if (!advancedReport) {
+      const saved = insightsList.find(i => i.scope === 'advanced_report')
+      if (saved) setAdvancedReport(saved)
+    }
+  }, [insightsList])
+
   useEffect(() => {
     if (activeTab !== 'tree' || exp?.status !== 'complete') return
-    experiments.getTaxonMeta(id).then(r => setTaxonMeta(r.data.taxa)).catch(() => {})
-    experiments.getInsights(id).then(r => setInsightsList(r.data.insights || [])).catch(() => {})
+    if (!taxonMeta) experiments.getTaxonMeta(id).then(r => setTaxonMeta(r.data.taxa)).catch(() => {})
   }, [activeTab, exp?.status, id])
 
   const handleTaxonAi = async (accession, userPrompt) => {
@@ -293,7 +306,10 @@ export default function ExperimentDetail() {
               )}
             </div>
             {alignmentData?.fasta && (
-              <AlignmentAIPanel experimentId={parseInt(id)} />
+              <AlignmentAIPanel
+                experimentId={parseInt(id)}
+                initialMessages={insightsList.filter(i => i.scope === 'alignment_chat').reverse()}
+              />
             )}
           </div>
         )}

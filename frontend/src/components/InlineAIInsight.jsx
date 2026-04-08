@@ -1,38 +1,9 @@
 import { useState, useEffect, useContext } from 'react'
 import { Brain, RefreshCw, ChevronDown, ChevronUp, Cpu } from 'lucide-react'
 import AIAnalysisLoader from './AIAnalysisLoader'
+import MarkdownRenderer from './MarkdownRenderer'
 import { ai } from '../api'
 import { ModelContext } from '../contexts/ModelContext'
-
-/* ── Simple markdown renderer ── */
-function SimpleMarkdown({ text }) {
-  if (!text) return null
-  const lines = text.split('\n')
-  const elements = []
-  let i = 0
-  while (i < lines.length) {
-    const line = lines[i]
-    if (line.startsWith('### ')) {
-      elements.push(<h4 key={i} className="font-semibold text-gray-800 mt-3 mb-1 text-sm">{line.slice(4)}</h4>)
-    } else if (line.startsWith('## ')) {
-      elements.push(<h3 key={i} className="font-bold text-gray-800 mt-4 mb-1">{line.slice(3)}</h3>)
-    } else if (line.match(/^[-*] /)) {
-      const items = []
-      while (i < lines.length && lines[i].match(/^[-*] /)) {
-        items.push(<li key={i} className="text-gray-600 text-sm">{lines[i].replace(/^[-*] /, '')}</li>)
-        i++
-      }
-      elements.push(<ul key={`ul-${i}`} className="list-disc list-inside space-y-0.5 my-1 ml-1">{items}</ul>)
-      continue
-    } else if (line.trim() === '') {
-      elements.push(<div key={i} className="h-1" />)
-    } else {
-      elements.push(<p key={i} className="text-gray-600 text-sm leading-relaxed">{line}</p>)
-    }
-    i++
-  }
-  return <div>{elements}</div>
-}
 
 export default function InlineAIInsight({
   experimentId,
@@ -176,7 +147,7 @@ export default function InlineAIInsight({
           )}
           {!loading && insight && (
             <div className="mt-1">
-              <SimpleMarkdown text={insight.ai_response} />
+              <MarkdownRenderer text={insight.ai_response} />
               {insight.doi_references?.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1">
                   {insight.doi_references.map((ref, i) => (

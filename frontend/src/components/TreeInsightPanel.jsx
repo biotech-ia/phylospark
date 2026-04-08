@@ -3,52 +3,7 @@ import { Sparkles, RefreshCw, ChevronDown, ChevronUp, Brain, Clock, TreePine, Ba
 import Plot from 'react-plotly.js'
 import DOIReferences, { DOIBadge } from './DOIReferences'
 import InlineAIInsight from './InlineAIInsight'
-
-/* ── Markdown renderer ── */
-function SimpleMarkdown({ text }) {
-  if (!text) return null
-  const lines = text.split('\n')
-  const elements = []
-  let i = 0
-  while (i < lines.length) {
-    const line = lines[i]
-    if (line.startsWith('### ')) {
-      elements.push(<h4 key={i} className="font-semibold text-gray-800 mt-3 mb-1 text-sm">{parseBold(line.slice(4))}</h4>)
-    } else if (line.startsWith('## ')) {
-      elements.push(<h3 key={i} className="font-bold text-gray-800 mt-4 mb-1">{parseBold(line.slice(3))}</h3>)
-    } else if (line.match(/^[-*] /)) {
-      const items = []
-      while (i < lines.length && lines[i].match(/^[-*] /)) {
-        items.push(<li key={i} className="text-gray-600 text-sm">{parseBold(lines[i].replace(/^[-*] /, ''))}</li>)
-        i++
-      }
-      elements.push(<ul key={`ul-${i}`} className="list-disc list-inside space-y-0.5 my-1 ml-1">{items}</ul>)
-      continue
-    } else if (line.match(/^\d+\. /)) {
-      const items = []
-      while (i < lines.length && lines[i].match(/^\d+\. /)) {
-        items.push(<li key={i} className="text-gray-600 text-sm">{parseBold(lines[i].replace(/^\d+\. /, ''))}</li>)
-        i++
-      }
-      elements.push(<ol key={`ol-${i}`} className="list-decimal list-inside space-y-0.5 my-1 ml-1">{items}</ol>)
-      continue
-    } else if (line.trim() === '') {
-      elements.push(<div key={i} className="h-2" />)
-    } else {
-      elements.push(<p key={i} className="text-gray-600 text-sm leading-relaxed">{parseBold(line)}</p>)
-    }
-    i++
-  }
-  return <div>{elements}</div>
-}
-function parseBold(text) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g)
-  return parts.map((p, i) =>
-    p.startsWith('**') && p.endsWith('**')
-      ? <strong key={i} className="font-semibold text-gray-700">{p.slice(2, -2)}</strong>
-      : p
-  )
-}
+import MarkdownRenderer from './MarkdownRenderer'
 
 export default function TreeInsightPanel({ insights, onTreeAi, onAdvancedReport, loading, reportLoading, advancedReport, taxonMeta, features, experimentId }) {
   const [prompt, setPrompt] = useState('')
@@ -347,7 +302,7 @@ export default function TreeInsightPanel({ insights, onTreeAi, onAdvancedReport,
             <div className="px-6 py-5">
               <div className={`transition-all ${expandedAi ? '' : 'max-h-48 overflow-hidden relative'}`}>
                 <div className="bg-white rounded-xl border border-gray-100 p-6 shadow-sm">
-                  <SimpleMarkdown text={latest.ai_response} />
+                  <MarkdownRenderer text={latest.ai_response} />
                   {latest.doi_references?.length > 0 && (
                     <DOIReferences references={latest.doi_references} />
                   )}
@@ -387,7 +342,7 @@ export default function TreeInsightPanel({ insights, onTreeAi, onAdvancedReport,
                     {ins.doi_references?.length > 0 && <DOIBadge references={ins.doi_references} />}
                   </summary>
                   <div className="px-4 py-3 border-t border-amber-200/50">
-                    <SimpleMarkdown text={ins.ai_response} />
+                    <MarkdownRenderer text={ins.ai_response} />
                     {ins.doi_references?.length > 0 && <DOIReferences references={ins.doi_references} />}
                   </div>
                 </details>
@@ -441,7 +396,7 @@ export default function TreeInsightPanel({ insights, onTreeAi, onAdvancedReport,
             <div className="px-6 py-5">
               <div className={`transition-all ${expandedReport ? '' : 'max-h-64 overflow-hidden relative'}`}>
                 <div className="bg-white rounded-xl border border-gray-100 p-6 shadow-sm">
-                  <SimpleMarkdown text={advancedReport.ai_response} />
+                  <MarkdownRenderer text={advancedReport.ai_response} />
                   <DOIReferences references={advancedReport.doi_references} />
                 </div>
                 {!expandedReport && <div className="absolute bottom-0 left-0 right-0 h-24 bg-gradient-to-t from-indigo-50 to-transparent" />}

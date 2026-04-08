@@ -1,40 +1,27 @@
 import { useState, useRef, useEffect } from 'react'
 import { Brain, Send, Loader2, MessageCircle } from 'lucide-react'
 import DOIReferences from './DOIReferences'
+import MarkdownRenderer from './MarkdownRenderer'
 import api from '../api'
 
-function SimpleMarkdown({ text }) {
-  if (!text) return null
-  const lines = text.split('\n')
-  return (
-    <div className="prose prose-sm max-w-none text-gray-700 leading-relaxed">
-      {lines.map((line, i) => {
-        if (line.startsWith('### ')) return <h3 key={i} className="text-base font-bold text-gray-800 mt-4 mb-1">{line.slice(4)}</h3>
-        if (line.startsWith('## ')) return <h2 key={i} className="text-lg font-bold text-gray-800 mt-5 mb-2">{line.slice(3)}</h2>
-        if (line.startsWith('# ')) return <h1 key={i} className="text-xl font-bold text-gray-900 mt-5 mb-2">{line.slice(2)}</h1>
-        if (line.startsWith('- ')) return <li key={i} className="ml-4 list-disc text-sm">{formatInline(line.slice(2))}</li>
-        if (line.startsWith('* ')) return <li key={i} className="ml-4 list-disc text-sm">{formatInline(line.slice(2))}</li>
-        if (line.match(/^\d+\.\s/)) return <li key={i} className="ml-4 list-decimal text-sm">{formatInline(line.replace(/^\d+\.\s/, ''))}</li>
-        if (line.trim() === '') return <br key={i} />
-        return <p key={i} className="text-sm mb-1">{formatInline(line)}</p>
-      })}
-    </div>
-  )
-}
-
-function formatInline(text) {
-  return text.split(/(\*\*[^*]+\*\*)/g).map((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**'))
-      return <strong key={i} className="font-semibold text-gray-900">{part.slice(2, -2)}</strong>
-    return part
-  })
-}
-
-export default function AlignmentAIPanel({ experimentId }) {
+export default function AlignmentAIPanel({ experimentId, initialMessages = [] }) {
   const [chatMessages, setChatMessages] = useState([])
   const [chatInput, setChatInput] = useState('')
   const [chatLoading, setChatLoading] = useState(false)
   const chatEndRef = useRef(null)
+  const restoredRef = useRef(false)
+
+  // Restore chat history from saved insights (each DB record → user + assistant message)
+  useEffect(() => {
+    if (restoredRef.current || !initialMessages.length) return
+    restoredRef.current = true
+    const restored = []
+    for (const ins of initialMessages) {
+      if (ins.user_prompt) restored.push({ role: 'user', content: ins.user_prompt })
+      if (ins.ai_response) restored.push({ role: 'assistant', content: ins.ai_response, doi_references: ins.doi_references })
+    }
+    if (restored.length) setChatMessages(restored)
+  }, [initialMessages])
 
   useEffect(() => {
     if (chatEndRef.current) chatEndRef.current.scrollIntoView({ behavior: 'smooth' })
@@ -55,7 +42,7 @@ export default function AlignmentAIPanel({ experimentId }) {
       })
       setChatMessages(prev => [...prev, {
         role: 'assistant',
-        content: res.data.analysis,
+        content: res.data.ai_response,
         doi_references: res.data.doi_references,
       }])
     } catch (err) {
@@ -115,7 +102,7 @@ export default function AlignmentAIPanel({ experimentId }) {
                   <p className="text-sm">{msg.content}</p>
                 ) : (
                   <div>
-                    <SimpleMarkdown text={msg.content} />
+                    <MarkdownRenderer text={msg.content} />
                     {msg.doi_references && msg.doi_references.length > 0 && (
                       <DOIReferences references={msg.doi_references} />
                     )}
