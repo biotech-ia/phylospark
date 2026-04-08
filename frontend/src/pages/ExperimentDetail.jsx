@@ -6,7 +6,6 @@ import TreeInsightPanel from '../components/TreeInsightPanel'
 import AlignmentViewer from '../components/AlignmentViewer'
 import AlignmentAIPanel from '../components/AlignmentAIPanel'
 import StatsCharts from '../components/StatsCharts'
-import StatsAIPanel from '../components/StatsAIPanel'
 import LogViewer from '../components/LogViewer'
 import PipelineMonitor from '../components/PipelineMonitor'
 
@@ -306,7 +305,6 @@ export default function ExperimentDetail() {
               distanceMatrix={statsData?.distances}
               experimentId={parseInt(id)}
             />
-            <StatsAIPanel experimentId={parseInt(id)} />
           </div>
         )}
       </div>
