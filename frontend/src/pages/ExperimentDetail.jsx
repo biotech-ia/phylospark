@@ -4,7 +4,9 @@ import { experiments, ai } from '../api'
 import TreeViewer from '../components/TreeViewer'
 import TreeInsightPanel from '../components/TreeInsightPanel'
 import AlignmentViewer from '../components/AlignmentViewer'
+import AlignmentAIPanel from '../components/AlignmentAIPanel'
 import StatsCharts from '../components/StatsCharts'
+import StatsAIPanel from '../components/StatsAIPanel'
 import LogViewer from '../components/LogViewer'
 import PipelineMonitor from '../components/PipelineMonitor'
 
@@ -281,22 +283,28 @@ export default function ExperimentDetail() {
           </div>
         )}
         {activeTab === 'alignment' && (
-          <div className="bg-white rounded-xl border shadow-sm p-6">
-            <h2 className="text-lg font-semibold text-gray-800 mb-4">Multiple Sequence Alignment</h2>
-            {alignmentData?.fasta ? (
-              <AlignmentViewer alignmentData={alignmentData.fasta} conservationData={alignmentStats?.conservation} />
-            ) : (
-              <PlaceholderMessage message="Alignment data not available yet" />
+          <div className="space-y-6">
+            <div className="bg-white rounded-xl border shadow-sm p-6">
+              <h2 className="text-lg font-semibold text-gray-800 mb-4">Multiple Sequence Alignment</h2>
+              {alignmentData?.fasta ? (
+                <AlignmentViewer alignmentData={alignmentData.fasta} conservationData={alignmentStats?.conservation} />
+              ) : (
+                <PlaceholderMessage message="Alignment data not available yet" />
+              )}
+            </div>
+            {alignmentData?.fasta && (
+              <AlignmentAIPanel experimentId={parseInt(id)} />
             )}
           </div>
         )}
         {activeTab === 'stats' && (
-          <div>
+          <div className="space-y-6">
             <h2 className="text-lg font-semibold text-gray-800 mb-4">Sequence Analysis & Statistics</h2>
             <StatsCharts
               features={statsData?.features}
               distanceMatrix={statsData?.distances}
             />
+            <StatsAIPanel experimentId={parseInt(id)} />
           </div>
         )}
       </div>

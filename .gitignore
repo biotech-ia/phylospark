@@ -48,3 +48,5 @@ build/
 keys/
 CREDENTIALS.txt
 scripts/setup-github.py
+
+scripts/

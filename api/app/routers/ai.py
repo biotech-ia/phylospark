@@ -7,6 +7,8 @@ from app.schemas import (
     AIAlignmentParamsRequest, AIAlignmentParamsResponse, AlignmentParams,
     TaxonInsightRequest, TreeInsightRequest, InsightResponse,
     AdvancedReportRequest, AdvancedReportResponse, DOIReference,
+    AlignmentChatRequest, AlignmentChatResponse,
+    AlignmentReportRequest, StatsReportRequest,
 )
 from app.config import get_settings
 from app.storage import get_minio_client, download_file
@@ -591,6 +593,451 @@ List ALL cited DOIs with full citation."""
         experiment_id=experiment_id,
         accession=None,
         scope="advanced_report",
+        user_prompt=payload.user_prompt,
+        ai_response=ai_text,
+        model_used=settings.deepseek_model,
+        doi_references=[ref.model_dump() for ref in doi_refs] if doi_refs else [],
+    )
+    db.add(insight)
+    db.commit()
+    db.refresh(insight)
+
+    return AdvancedReportResponse(
+        id=insight.id,
+        experiment_id=insight.experiment_id,
+        scope=insight.scope,
+        ai_response=insight.ai_response,
+        doi_references=doi_refs,
+        model_used=insight.model_used,
+        created_at=insight.created_at,
+    )
+
+
+def _get_alignment_detailed(experiment_id: int) -> str:
+    """Get detailed alignment context including per-column conservation summary."""
+    try:
+        client = get_minio_client()
+        data = download_file(client, "phylospark-alignments", f"experiments/{experiment_id}/alignment.fasta")
+        fasta = data.decode("utf-8")
+        seqs = []
+        ids = []
+        cur = []
+        cur_id = ""
+        for line in fasta.strip().split("\n"):
+            if line.startswith(">"):
+                if cur:
+                    seqs.append("".join(cur))
+                    ids.append(cur_id)
+                cur_id = line[1:].strip().split()[0]
+                cur = []
+            else:
+                cur.append(line.strip())
+        if cur:
+            seqs.append("".join(cur))
+            ids.append(cur_id)
+        if not seqs:
+            return "(empty alignment)"
+        aln_len = max(len(s) for s in seqs)
+        gap_count = sum(s.count("-") for s in seqs)
+        total = len(seqs) * aln_len
+        gap_pct = gap_count / total * 100 if total > 0 else 0
+
+        # Compute per-column conservation summary
+        highly_conserved = 0
+        moderate = 0
+        variable = 0
+        for col in range(min(aln_len, 5000)):
+            column = [s[col].upper() if col < len(s) else "-" for s in seqs]
+            non_gap = [c for c in column if c != "-"]
+            if non_gap:
+                from collections import Counter
+                counts = Counter(non_gap)
+                top = counts.most_common(1)[0][1] / len(column)
+                if top > 0.8:
+                    highly_conserved += 1
+                elif top > 0.5:
+                    moderate += 1
+                else:
+                    variable += 1
+
+        # Identify conserved blocks (runs of >80% conservation)
+        lines = [
+            f"Alignment: {len(seqs)} sequences, length {aln_len} positions",
+            f"Gap percentage: {gap_pct:.1f}%",
+            f"Highly conserved positions (>80%): {highly_conserved} ({highly_conserved/aln_len*100:.1f}%)" if aln_len else "",
+            f"Moderately conserved (50-80%): {moderate}",
+            f"Variable positions (<50%): {variable}",
+            f"Sequence IDs: {', '.join(ids[:30])}{'...' if len(ids)>30 else ''}",
+        ]
+        # Add first 10 seq lengths
+        for i, (sid, s) in enumerate(zip(ids[:10], seqs[:10])):
+            real_len = len(s.replace("-", ""))
+            lines.append(f"  {sid}: {real_len} aa ({len(s)} aligned)")
+
+        return "\n".join(lines)
+    except Exception:
+        return "(alignment not available)"
+
+
+@router.post("/experiments/{experiment_id}/alignment-report", response_model=AdvancedReportResponse)
+def alignment_report(experiment_id: int, payload: AlignmentReportRequest, db: Session = Depends(get_db)):
+    """Generate deep AI analysis of the MSA alignment with DOI references."""
+    exp = db.query(Experiment).filter(Experiment.id == experiment_id).first()
+    if not exp:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    if exp.status != ExperimentStatus.COMPLETE:
+        raise HTTPException(status_code=400, detail="Pipeline must complete first")
+
+    client_ai = _get_client()
+    settings = get_settings()
+
+    alignment_detail = _get_alignment_detailed(experiment_id)
+    taxa_ctx = _get_taxon_meta_context(experiment_id, db)
+    features_ctx = _get_features_context(experiment_id)
+    newick = _get_tree_context(experiment_id)
+
+    system_prompt = """You are a world-class bioinformatics expert specializing in multiple sequence alignment (MSA) analysis, protein conservation, and molecular evolution. You produce rigorous scientific reports suitable for academic publication.
+
+CRITICAL REQUIREMENTS:
+1. Include REAL DOI references from published scientific papers. Format: [Author et al., Year](https://doi.org/DOI_HERE)
+2. Include at least 8-12 DOI references from papers about:
+   - MSA methods (MAFFT: Katoh & Standley 2013, MUSCLE: Edgar 2004)
+   - Conservation scoring (Valdar 2002, Capra & Singh 2007)
+   - The specific protein family analyzed
+   - Gap analysis methodology
+   - Substitution matrices (BLOSUM62: Henikoff & Henikoff 1992)
+3. Every major scientific claim must cite a real DOI.
+4. Use markdown with clear headings, bullet points, and tables.
+5. Be precise: cite actual numbers from the data provided."""
+
+    user_prompt = f"""Generate a COMPREHENSIVE scientific analysis of this Multiple Sequence Alignment.
+
+**Experiment:**
+- Name: {exp.name}
+- Query: {exp.query}
+- Organism: {exp.organism or 'All organisms'}
+
+**Alignment Data:**
+{alignment_detail}
+
+**Taxa in alignment:**
+{taxa_ctx}
+
+**Sequence features (Spark-computed):**
+{features_ctx}
+
+**Phylogenetic tree:**
+{newick}
+
+Write a comprehensive MSA analysis report covering ALL sections:
+
+## 1. Alignment Overview & Quality Assessment
+- Summary statistics (sequences, length, gaps, conservation)
+- Overall alignment quality evaluation
+- Comparison to expected alignment characteristics for this protein family
+
+## 2. Conservation Analysis
+- Highly conserved regions and their biological significance
+- Active site motifs and catalytic residues (if identifiable)
+- Conservation pattern across different taxonomic groups
+- Relationship between conservation and known functional domains
+
+## 3. Gap Analysis & Indel Patterns
+- Gap distribution across sequences (which organisms have insertions/deletions)
+- Gap-rich regions vs gap-free blocks
+- Biological interpretation: do gaps correlate with known structural features?
+- Impact on alignment quality and phylogenetic inference
+
+## 4. Substitution Patterns & Evolutionary Rates
+- Amino acid substitution patterns observed
+- Position-specific evolutionary rates
+- Synonymous vs non-synonymous change implications
+- Selective pressure indicators (conserved vs rapidly evolving sites)
+
+## 5. Sequence Diversity & Clustering
+- Pairwise identity distribution
+- Sequence groups/clusters based on similarity
+- Outlier sequences and their implications
+- Taxonomic representation assessment
+
+## 6. Functional Domain Mapping
+- Known domains in this protein family
+- Conserved motifs mapped to alignment positions
+- Predicted functional importance of conserved blocks
+- Structure-function correlations
+
+## 7. Methodological Assessment
+- Suitability of alignment method used
+- Impact of selected parameters on results
+- Potential alignment artifacts or concerns
+- Recommendations for refinement
+
+## 8. Key Findings & Scientific Significance
+- Top 5 most important discoveries
+- How results relate to current literature
+- Novel observations worth further investigation
+- Practical implications (biotechnological, medical, ecological)
+
+## References
+Full citation list with validated DOIs."""
+
+    if payload.user_prompt:
+        user_prompt += f"\n\n**Additional focus requested:** {payload.user_prompt}"
+
+    try:
+        response = client_ai.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=8000,
+        )
+        ai_text = response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"Alignment report AI failed: {e}")
+        raise HTTPException(status_code=502, detail=f"AI alignment report failed: {str(e)}")
+
+    doi_refs = _extract_and_validate_dois(ai_text)
+
+    insight = TaxonInsight(
+        experiment_id=experiment_id,
+        accession=None,
+        scope="alignment_report",
+        user_prompt=payload.user_prompt,
+        ai_response=ai_text,
+        model_used=settings.deepseek_model,
+        doi_references=[ref.model_dump() for ref in doi_refs] if doi_refs else [],
+    )
+    db.add(insight)
+    db.commit()
+    db.refresh(insight)
+
+    return AdvancedReportResponse(
+        id=insight.id,
+        experiment_id=insight.experiment_id,
+        scope=insight.scope,
+        ai_response=insight.ai_response,
+        doi_references=doi_refs,
+        model_used=insight.model_used,
+        created_at=insight.created_at,
+    )
+
+
+@router.post("/experiments/{experiment_id}/alignment-chat", response_model=AlignmentChatResponse)
+def alignment_chat(experiment_id: int, payload: AlignmentChatRequest, db: Session = Depends(get_db)):
+    """Conversational AI chat about the alignment with full context. Supports conversation history."""
+    exp = db.query(Experiment).filter(Experiment.id == experiment_id).first()
+    if not exp:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    if exp.status != ExperimentStatus.COMPLETE:
+        raise HTTPException(status_code=400, detail="Pipeline must complete first")
+
+    client_ai = _get_client()
+    settings = get_settings()
+
+    alignment_detail = _get_alignment_detailed(experiment_id)
+    taxa_ctx = _get_taxon_meta_context(experiment_id, db)
+    features_ctx = _get_features_context(experiment_id)
+
+    system_prompt = f"""You are an expert bioinformatics research assistant having a conversation about a Multiple Sequence Alignment.
+
+You have access to full experimental context:
+
+**Experiment:** {exp.name}
+**Query:** {exp.query}
+**Organism:** {exp.organism or 'All'}
+
+**Alignment data:**
+{alignment_detail}
+
+**Sequence metadata:**
+{taxa_ctx}
+
+**Computed features:**
+{features_ctx}
+
+RULES:
+- Answer the user's questions with scientific rigor and depth
+- Include specific DOI references when making scientific claims. Format: [Author et al., Year](https://doi.org/DOI_HERE)
+- Reference actual data from the alignment when possible (sequence names, positions, conservation values)
+- If the user asks for analysis of specific regions or sequences, provide detailed answers
+- Use markdown formatting for clarity
+- Be conversational but scientifically precise
+- Build on previous conversation context provided"""
+
+    messages = [{"role": "system", "content": system_prompt}]
+
+    # Add conversation history for context continuity
+    if payload.conversation_history:
+        for msg in payload.conversation_history[-10:]:  # Last 10 messages max
+            messages.append({"role": msg.role, "content": msg.content})
+
+    messages.append({"role": "user", "content": payload.user_prompt})
+
+    try:
+        response = client_ai.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=messages,
+            temperature=0.4,
+            max_tokens=4000,
+        )
+        ai_text = response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"Alignment chat AI failed: {e}")
+        raise HTTPException(status_code=502, detail=f"AI chat failed: {str(e)}")
+
+    doi_refs = _extract_and_validate_dois(ai_text)
+
+    insight = TaxonInsight(
+        experiment_id=experiment_id,
+        accession=None,
+        scope="alignment_chat",
+        user_prompt=payload.user_prompt,
+        ai_response=ai_text,
+        model_used=settings.deepseek_model,
+        doi_references=[ref.model_dump() for ref in doi_refs] if doi_refs else None,
+    )
+    db.add(insight)
+    db.commit()
+    db.refresh(insight)
+    return insight
+
+
+@router.post("/experiments/{experiment_id}/stats-report", response_model=AdvancedReportResponse)
+def stats_report(experiment_id: int, payload: StatsReportRequest, db: Session = Depends(get_db)):
+    """Generate deep AI analysis of sequence statistics with DOI references."""
+    exp = db.query(Experiment).filter(Experiment.id == experiment_id).first()
+    if not exp:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    if exp.status != ExperimentStatus.COMPLETE:
+        raise HTTPException(status_code=400, detail="Pipeline must complete first")
+
+    client_ai = _get_client()
+    settings = get_settings()
+
+    features_ctx = _get_features_context(experiment_id)
+    taxa_ctx = _get_taxon_meta_context(experiment_id, db)
+    alignment_ctx = _get_alignment_brief(experiment_id)
+    newick = _get_tree_context(experiment_id)
+
+    # Get distance matrix summary
+    dist_ctx = ""
+    try:
+        minio_client = get_minio_client()
+        dist_data = download_file(minio_client, "phylospark-features", f"experiments/{experiment_id}/distances.json")
+        distances = json.loads(dist_data)
+        if distances:
+            dists = [d.get("euclidean_distance", 0) for d in distances]
+            dist_ctx = f"\nPairwise distances: {len(distances)} pairs, min={min(dists):.4f}, max={max(dists):.4f}, avg={sum(dists)/len(dists):.4f}"
+    except Exception:
+        pass
+
+    system_prompt = """You are a world-class bioinformatics expert specializing in sequence analysis, protein biochemistry, and statistical analysis. You produce rigorous scientific reports suitable for academic publication.
+
+CRITICAL REQUIREMENTS:
+1. Include REAL DOI references from published scientific papers. Format: [Author et al., Year](https://doi.org/DOI_HERE)
+2. Include at least 8-12 DOI references about:
+   - Amino acid composition analysis methods
+   - Hydrophobicity scales (Kyte-Doolittle: PMID 7108955)
+   - Sequence feature engineering approaches
+   - Statistical methods for bioinformatics
+   - The protein family being studied
+3. Use precise numbers from the data provided.
+4. Use markdown formatting with tables where appropriate."""
+
+    user_prompt = f"""Generate a COMPREHENSIVE scientific analysis report for the sequence statistics of this experiment.
+
+**Experiment:**
+- Name: {exp.name}
+- Query: {exp.query}
+- Organism: {exp.organism or 'All organisms'}
+
+**Sequence Features (PySpark-computed):**
+{features_ctx}
+
+**Taxa:**
+{taxa_ctx}
+
+**Alignment summary:**
+{alignment_ctx}
+{dist_ctx}
+
+**Phylogenetic tree:**
+{newick}
+
+Write a comprehensive report covering ALL sections:
+
+## 1. Dataset Overview
+- Number of sequences, taxonomic composition, diversity metrics
+- Data quality assessment
+
+## 2. Sequence Length Analysis
+- Distribution statistics (mean, median, std, range, quartiles)
+- Outlier identification and biological interpretation
+- Length variation across taxonomic groups
+
+## 3. Amino Acid Composition Analysis
+- Global composition profile vs expected proteome frequencies
+- Over/under-represented amino acids and their implications
+- Composition differences between sequence clusters
+- Correlation with protein function and structure
+
+## 4. Physicochemical Property Analysis
+- Hydrophobic fraction analysis (Kyte-Doolittle scale context)
+- Charged residue distribution (acidic vs basic balance)
+- Aromatics, aliphatics, and their structural roles
+- isoelectric point predictions based on charged fractions
+
+## 5. Pairwise Distance Analysis
+- Distance distribution and what it reveals about divergence
+- Closest and most distant pairs — biological significance
+- Clustering patterns from distance data
+- Consistency with phylogenetic tree topology
+
+## 6. Feature Engineering Insights (PySpark)
+- How computed features relate to protein function
+- Machine learning feature importance implications
+- Predictive power of different feature categories
+
+## 7. Comparative Analysis
+- How these sequences compare to known protein family members
+- Expected vs observed feature distributions
+- Anomalies that suggest novel variants or misannotations
+
+## 8. Key Findings & Recommendations
+- Top scientific insights
+- Suggested experimental validations
+- Further computational analyses recommended
+
+## References
+Full citation list with validated DOIs."""
+
+    if payload.user_prompt:
+        user_prompt += f"\n\n**Additional focus requested:** {payload.user_prompt}"
+
+    try:
+        response = client_ai.chat.completions.create(
+            model=settings.deepseek_model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=8000,
+        )
+        ai_text = response.choices[0].message.content.strip()
+    except Exception as e:
+        logger.error(f"Stats report AI failed: {e}")
+        raise HTTPException(status_code=502, detail=f"AI stats report failed: {str(e)}")
+
+    doi_refs = _extract_and_validate_dois(ai_text)
+
+    insight = TaxonInsight(
+        experiment_id=experiment_id,
+        accession=None,
+        scope="stats_report",
         user_prompt=payload.user_prompt,
         ai_response=ai_text,
         model_used=settings.deepseek_model,

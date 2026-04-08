@@ -31,6 +31,9 @@ export const ai = {
   taxonInsight: (experimentId, data) => api.post(`/ai/experiments/${experimentId}/taxon-insight`, data),
   treeInsight: (experimentId, data) => api.post(`/ai/experiments/${experimentId}/tree-insight`, data),
   advancedReport: (experimentId, data = {}) => api.post(`/ai/experiments/${experimentId}/advanced-report`, data),
+  alignmentReport: (experimentId, data = {}) => api.post(`/ai/experiments/${experimentId}/alignment-report`, data),
+  alignmentChat: (experimentId, data) => api.post(`/ai/experiments/${experimentId}/alignment-chat`, data),
+  statsReport: (experimentId, data = {}) => api.post(`/ai/experiments/${experimentId}/stats-report`, data),
 }
 
 export function connectExperimentWS(experimentId, onMessage) {

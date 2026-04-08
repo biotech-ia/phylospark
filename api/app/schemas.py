@@ -167,3 +167,32 @@ class AlignmentStatsResponse(BaseModel):
     gap_percentage: float
     conservation: list[ConservationData]
     consensus_sequence: str
+
+
+# ── Alignment AI chat & reports ──
+
+class AlignmentChatMessage(BaseModel):
+    role: str  # "user" or "assistant"
+    content: str
+
+class AlignmentChatRequest(BaseModel):
+    user_prompt: str
+    conversation_history: Optional[list[AlignmentChatMessage]] = None
+
+class AlignmentChatResponse(BaseModel):
+    id: int
+    experiment_id: int
+    scope: str
+    user_prompt: Optional[str]
+    ai_response: str
+    doi_references: Optional[list[DOIReference]] = None
+    model_used: Optional[str]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+class AlignmentReportRequest(BaseModel):
+    user_prompt: Optional[str] = None
+
+class StatsReportRequest(BaseModel):
+    user_prompt: Optional[str] = None
