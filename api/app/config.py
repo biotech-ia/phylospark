@@ -10,9 +10,21 @@ class Settings(BaseSettings):
     minio_bucket: str = "phylospark"
     ncbi_email: str = ""
     ncbi_api_key: str = ""
+
+    # DeepSeek
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
+    deepseek_reasoner_model: str = "deepseek-reasoner"
+
+    # OpenAI (optional second provider)
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-4o-mini"
+
+    # Defaults per purpose
+    default_chat_model: str = "deepseek-chat"
+    default_reasoning_model: str = "deepseek-reasoner"
 
     class Config:
         env_file = ".env"

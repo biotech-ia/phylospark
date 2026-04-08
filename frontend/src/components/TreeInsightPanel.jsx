@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react'
 import { Sparkles, RefreshCw, ChevronDown, ChevronUp, Brain, Clock, TreePine, BarChart3, Dna, Layers, FileText, Zap, PieChart, TrendingUp } from 'lucide-react'
 import Plot from 'react-plotly.js'
 import DOIReferences, { DOIBadge } from './DOIReferences'
+import InlineAIInsight from './InlineAIInsight'
 
 /* ── Markdown renderer ── */
 function SimpleMarkdown({ text }) {
@@ -49,7 +50,7 @@ function parseBold(text) {
   )
 }
 
-export default function TreeInsightPanel({ insights, onTreeAi, onAdvancedReport, loading, reportLoading, advancedReport, taxonMeta, features }) {
+export default function TreeInsightPanel({ insights, onTreeAi, onAdvancedReport, loading, reportLoading, advancedReport, taxonMeta, features, experimentId }) {
   const [prompt, setPrompt] = useState('')
   const [showHistory, setShowHistory] = useState(false)
   const [expandedAi, setExpandedAi] = useState(true)
@@ -207,7 +208,12 @@ export default function TreeInsightPanel({ insights, onTreeAi, onAdvancedReport,
                 config={{ displayModeBar: false, responsive: true }} style={{ width: '100%' }}
               />
             </ChartCard>
+          </div>
 
+          {/* AI insight after taxonomy charts */}
+          {experimentId && <InlineAIInsight experimentId={experimentId} scope="chart_taxonomy" />}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Sequence Length Histogram */}
             {charts.lengths.length > 0 && (
               <ChartCard title="Sequence Length Distribution" icon={<Dna size={14} className="text-purple-500" />}>
@@ -241,7 +247,12 @@ export default function TreeInsightPanel({ insights, onTreeAi, onAdvancedReport,
                 />
               </ChartCard>
             )}
+          </div>
 
+          {/* AI insight after length charts */}
+          {experimentId && <InlineAIInsight experimentId={experimentId} scope="chart_lengths" />}
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
             {/* Hydrophobicity Distribution */}
             {featureCharts?.hydro?.length > 0 && (
               <ChartCard title="Hydrophobic Fraction" icon={<Zap size={14} className="text-blue-500" />}>
@@ -278,6 +289,10 @@ export default function TreeInsightPanel({ insights, onTreeAi, onAdvancedReport,
               </ChartCard>
             )}
           </div>
+
+          {/* AI insight after feature charts + overall tree summary */}
+          {experimentId && <InlineAIInsight experimentId={experimentId} scope="chart_features" />}
+          {experimentId && <InlineAIInsight experimentId={experimentId} scope="tree_auto" />}
         </div>
       )}
 

@@ -1,6 +1,7 @@
 import Plot from 'react-plotly.js'
+import InlineAIInsight from './InlineAIInsight'
 
-export default function StatsCharts({ features, distanceMatrix }) {
+export default function StatsCharts({ features, distanceMatrix, experimentId }) {
   if (!features && !distanceMatrix) {
     return (
       <div className="bg-white rounded-xl border p-8 text-center text-gray-400">
@@ -37,6 +38,8 @@ export default function StatsCharts({ features, distanceMatrix }) {
         </div>
       )}
 
+      {experimentId && <InlineAIInsight experimentId={experimentId} scope="chart_length_distribution" />}
+
       {/* Amino Acid Composition Heatmap */}
       {features && features.length > 0 && (
         <div className="bg-white rounded-xl border shadow-sm p-4">
@@ -64,6 +67,8 @@ export default function StatsCharts({ features, distanceMatrix }) {
           />
         </div>
       )}
+
+      {experimentId && <InlineAIInsight experimentId={experimentId} scope="chart_aa_composition" />}
 
       {/* Hydrophobic vs Charged Scatter */}
       {features && features.length > 0 && (
@@ -101,6 +106,8 @@ export default function StatsCharts({ features, distanceMatrix }) {
         </div>
       )}
 
+      {experimentId && <InlineAIInsight experimentId={experimentId} scope="chart_hydrophobic_charged" />}
+
       {/* Distance Heatmap */}
       {distanceMatrix && distanceMatrix.length > 0 && (
         <div className="bg-white rounded-xl border shadow-sm p-4">
@@ -108,6 +115,11 @@ export default function StatsCharts({ features, distanceMatrix }) {
           <DistanceHeatmap distances={distanceMatrix} />
         </div>
       )}
+
+      {experimentId && <InlineAIInsight experimentId={experimentId} scope="chart_distance_matrix" />}
+
+      {/* Overall Stats AI Summary */}
+      {experimentId && <InlineAIInsight experimentId={experimentId} scope="stats_auto" />}
     </div>
   )
 }

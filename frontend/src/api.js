@@ -34,6 +34,11 @@ export const ai = {
   alignmentReport: (experimentId, data = {}) => api.post(`/ai/experiments/${experimentId}/alignment-report`, data),
   alignmentChat: (experimentId, data) => api.post(`/ai/experiments/${experimentId}/alignment-chat`, data),
   statsReport: (experimentId, data = {}) => api.post(`/ai/experiments/${experimentId}/stats-report`, data),
+  // New endpoints
+  models: () => api.get('/ai/models'),
+  modelHealth: (modelId) => api.get(`/ai/models/${modelId}/health`),
+  cachedAnalysis: (experimentId, scope) => api.get(`/ai/experiments/${experimentId}/cached-analysis?scope=${scope}`),
+  chartAnalysis: (experimentId, data) => api.post(`/ai/experiments/${experimentId}/chart-analysis`, data),
 }
 
 export function connectExperimentWS(experimentId, onMessage) {

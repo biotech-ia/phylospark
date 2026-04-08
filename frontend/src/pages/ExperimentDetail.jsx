@@ -268,6 +268,7 @@ export default function ExperimentDetail() {
                 reportLoading={reportLoading}
                 advancedReport={advancedReport}
                 features={statsData?.features}
+                experimentId={parseInt(id)}
               />
             )}
             {treeData?.newick && (
@@ -287,7 +288,7 @@ export default function ExperimentDetail() {
             <div className="bg-white rounded-xl border shadow-sm p-6">
               <h2 className="text-lg font-semibold text-gray-800 mb-4">Multiple Sequence Alignment</h2>
               {alignmentData?.fasta ? (
-                <AlignmentViewer alignmentData={alignmentData.fasta} conservationData={alignmentStats?.conservation} />
+                <AlignmentViewer alignmentData={alignmentData.fasta} conservationData={alignmentStats?.conservation} experimentId={parseInt(id)} />
               ) : (
                 <PlaceholderMessage message="Alignment data not available yet" />
               )}
@@ -303,6 +304,7 @@ export default function ExperimentDetail() {
             <StatsCharts
               features={statsData?.features}
               distanceMatrix={statsData?.distances}
+              experimentId={parseInt(id)}
             />
             <StatsAIPanel experimentId={parseInt(id)} />
           </div>

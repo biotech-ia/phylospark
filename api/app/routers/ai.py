@@ -9,6 +9,8 @@ from app.schemas import (
     AdvancedReportRequest, AdvancedReportResponse, DOIReference,
     AlignmentChatRequest, AlignmentChatResponse,
     AlignmentReportRequest, StatsReportRequest,
+    ChartAnalysisRequest, ChartAnalysisResponse,
+    CachedAnalysisResponse, ModelInfo,
 )
 from app.config import get_settings
 from app.storage import get_minio_client, download_file
@@ -16,6 +18,7 @@ from openai import OpenAI
 import json
 import logging
 import re
+import time
 import httpx
 
 logger = logging.getLogger(__name__)
@@ -24,26 +27,106 @@ router = APIRouter(prefix="/ai", tags=["ai"])
 
 DOI_PATTERN = re.compile(r'10\.\d{4,9}/[^\s,;\]}"\']+')
 
+# ── Model purpose mapping ──
+REASONING_MODELS = {"deepseek-reasoner", "o1-mini", "o1-preview"}
+CHAT_MODELS = {"deepseek-chat", "gpt-4o-mini", "gpt-4o", "gpt-3.5-turbo"}
 
-def _get_client() -> OpenAI:
+
+def _resolve_provider(model: str) -> str:
+    """Determine which provider owns a given model name."""
+    if model.startswith("deepseek"):
+        return "deepseek"
+    return "openai"
+
+
+def _get_client(provider: str = "deepseek") -> OpenAI:
+    """Get OpenAI-compatible client for the requested provider."""
     settings = get_settings()
+    if provider == "openai":
+        if not settings.openai_api_key:
+            raise HTTPException(status_code=503, detail="OpenAI API key not configured")
+        return OpenAI(api_key=settings.openai_api_key, base_url=settings.openai_base_url)
+    # default: deepseek
     if not settings.deepseek_api_key:
         raise HTTPException(status_code=503, detail="DeepSeek API key not configured")
-    return OpenAI(
-        api_key=settings.deepseek_api_key,
-        base_url=settings.deepseek_base_url,
-    )
+    return OpenAI(api_key=settings.deepseek_api_key, base_url=settings.deepseek_base_url)
+
+
+def _call_model(
+    messages: list[dict],
+    model: str | None = None,
+    purpose: str = "chat",
+    temperature: float = 0.3,
+    max_tokens: int = 4000,
+) -> dict:
+    """Unified model call with retry, fallback, and reasoning_content extraction.
+
+    Returns dict: { content, reasoning_content, model_used, tokens }
+    """
+    settings = get_settings()
+    if not model:
+        model = settings.default_reasoning_model if purpose == "reasoning" else settings.default_chat_model
+
+    provider = _resolve_provider(model)
+    fallback_model = settings.default_chat_model if model in REASONING_MODELS else None
+
+    # DeepSeek-Reasoner doesn't support system messages or temperature
+    is_reasoner = model in REASONING_MODELS
+    call_messages = messages
+    call_temp = temperature
+    if is_reasoner:
+        # Merge system message into first user message for reasoner models
+        if call_messages and call_messages[0].get("role") == "system":
+            sys_content = call_messages[0]["content"]
+            rest = call_messages[1:]
+            if rest and rest[0].get("role") == "user":
+                rest[0] = {"role": "user", "content": f"{sys_content}\n\n{rest[0]['content']}"}
+            else:
+                rest = [{"role": "user", "content": sys_content}] + rest
+            call_messages = rest
+        call_temp = None  # reasoner ignores temperature
+
+    for attempt in range(3):
+        try:
+            client = _get_client(provider)
+            kwargs = dict(model=model, messages=call_messages, max_tokens=max_tokens)
+            if call_temp is not None:
+                kwargs["temperature"] = call_temp
+            t0 = time.time()
+            response = client.chat.completions.create(**kwargs)
+            latency = time.time() - t0
+            choice = response.choices[0]
+            content = choice.message.content or ""
+            reasoning = getattr(choice.message, "reasoning_content", None) or ""
+            tokens = response.usage.total_tokens if response.usage else 0
+            logger.info(f"AI call: model={model} tokens={tokens} latency={latency:.1f}s")
+            return {
+                "content": content.strip(),
+                "reasoning_content": reasoning.strip() if reasoning else "",
+                "model_used": model,
+                "tokens": tokens,
+            }
+        except Exception as e:
+            wait = 2 ** (attempt + 1)
+            logger.warning(f"AI call attempt {attempt+1} failed ({model}): {e}. Retrying in {wait}s...")
+            if attempt < 2:
+                time.sleep(wait)
+
+    # Fallback to chat model if reasoning failed
+    if fallback_model and fallback_model != model:
+        logger.warning(f"Falling back from {model} to {fallback_model}")
+        return _call_model(messages, model=fallback_model, purpose="chat",
+                          temperature=temperature, max_tokens=max_tokens)
+
+    raise HTTPException(status_code=502, detail=f"AI call failed after 3 retries ({model})")
 
 
 @router.post("/recommend-sequences", response_model=AIRecommendResponse)
 def recommend_sequences(payload: AIRecommendRequest):
-    """Use DeepSeek AI to recommend which sequences to keep for phylogenetic analysis."""
-    client = _get_client()
-    settings = get_settings()
-
+    """Use AI to recommend which sequences to keep for phylogenetic analysis."""
     seq_list = "\n".join(
         f"- {s.accession}: {s.title} | {s.organism} | {s.length} aa"
-        for s in payload.sequences[:500]  # Limit context size
+        for s in payload.sequences[:500]
     )
 
     prompt = f"""You are an expert bioinformatician advising on phylogenetic analysis.
@@ -69,15 +152,12 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
 {{"recommended_accessions": ["ACC1", "ACC2", ...], "reasoning": "Brief explanation of selection criteria used"}}"""
 
     try:
-        response = client.chat.completions.create(
-            model=settings.deepseek_model,
+        result = _call_model(
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-            max_tokens=4000,
+            purpose="chat", temperature=0.3, max_tokens=4000,
+            model=getattr(payload, 'model', None),
         )
-
-        text = response.choices[0].message.content.strip()
-        # Strip markdown code blocks if present
+        text = result["content"]
         if text.startswith("```"):
             text = text.split("\n", 1)[1]
             if text.endswith("```"):
@@ -90,20 +170,19 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
             reasoning=data.get("reasoning", "AI-curated selection for phylogenetic analysis"),
             total_recommended=len(data["recommended_accessions"]),
         )
-    except json.JSONDecodeError as e:
+    except json.JSONDecodeError:
         logger.error(f"AI response not valid JSON: {text[:500]}")
         raise HTTPException(status_code=502, detail="AI returned invalid response format")
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"DeepSeek API call failed: {e}")
+        logger.error(f"AI call failed: {e}")
         raise HTTPException(status_code=502, detail=f"AI recommendation failed: {str(e)}")
 
 
 @router.post("/recommend-alignment-params", response_model=AIAlignmentParamsResponse)
 def recommend_alignment_params(payload: AIAlignmentParamsRequest):
-    """Use DeepSeek AI to recommend optimal alignment parameters."""
-    client = _get_client()
-    settings = get_settings()
-
+    """Use AI to recommend optimal alignment parameters."""
     prompt = f"""You are an expert bioinformatician. Recommend optimal multiple sequence alignment parameters.
 
 Experiment: "{payload.experiment_name}"
@@ -124,14 +203,12 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
 {{"method": "mafft or muscle", "gap_opening_penalty": float, "gap_extension_penalty": float, "protein_weight_matrix": "BLOSUM62 or Gonnet or PAM250", "max_iterations": int, "reasoning": "Brief explanation"}}"""
 
     try:
-        response = client.chat.completions.create(
-            model=settings.deepseek_model,
+        result = _call_model(
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=1000,
+            purpose="chat", temperature=0.2, max_tokens=1000,
+            model=getattr(payload, 'model', None),
         )
-
-        text = response.choices[0].message.content.strip()
+        text = result["content"]
         if text.startswith("```"):
             text = text.split("\n", 1)[1]
             if text.endswith("```"):
@@ -153,8 +230,10 @@ Respond ONLY with valid JSON (no markdown, no code blocks):
     except json.JSONDecodeError:
         logger.error(f"AI response not valid JSON: {text[:500]}")
         raise HTTPException(status_code=502, detail="AI returned invalid response format")
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"DeepSeek API call failed: {e}")
+        logger.error(f"AI call failed: {e}")
         raise HTTPException(status_code=502, detail=f"AI parameter recommendation failed: {str(e)}")
 
 
@@ -190,9 +269,6 @@ def taxon_insight(experiment_id: int, payload: TaxonInsightRequest, db: Session 
         raise HTTPException(status_code=404, detail="Experiment not found")
     if exp.status != ExperimentStatus.COMPLETE:
         raise HTTPException(status_code=400, detail="Pipeline must complete first")
-
-    client_ai = _get_client()
-    settings = get_settings()
 
     newick = _get_tree_context(experiment_id)
     taxa_ctx = _get_taxon_meta_context(experiment_id, db)
@@ -240,16 +316,17 @@ Provide a rich analysis covering:
         user_prompt += f"\n\n**Additional user question:** {payload.user_prompt}"
 
     try:
-        response = client_ai.chat.completions.create(
-            model=settings.deepseek_model,
+        result = _call_model(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.4,
-            max_tokens=3000,
+            purpose="chat", temperature=0.4, max_tokens=3000,
+            model=getattr(payload, 'model', None),
         )
-        ai_text = response.choices[0].message.content.strip()
+        ai_text = result["content"]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Taxon insight AI failed: {e}")
         raise HTTPException(status_code=502, detail=f"AI analysis failed: {str(e)}")
@@ -260,7 +337,7 @@ Provide a rich analysis covering:
         scope="taxon",
         user_prompt=payload.user_prompt,
         ai_response=ai_text,
-        model_used=settings.deepseek_model,
+        model_used=result["model_used"],
     )
 
     # Extract and validate DOIs from AI response
@@ -282,9 +359,6 @@ def tree_insight(experiment_id: int, payload: TreeInsightRequest, db: Session = 
         raise HTTPException(status_code=404, detail="Experiment not found")
     if exp.status != ExperimentStatus.COMPLETE:
         raise HTTPException(status_code=400, detail="Pipeline must complete first")
-
-    client_ai = _get_client()
-    settings = get_settings()
 
     newick = _get_tree_context(experiment_id)
     taxa_ctx = _get_taxon_meta_context(experiment_id, db)
@@ -338,16 +412,17 @@ Provide a comprehensive analysis covering:
         user_prompt += f"\n\n**Additional user question:** {payload.user_prompt}"
 
     try:
-        response = client_ai.chat.completions.create(
-            model=settings.deepseek_model,
+        result = _call_model(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.4,
-            max_tokens=4000,
+            purpose="reasoning", temperature=0.4, max_tokens=4000,
+            model=getattr(payload, 'model', None),
         )
-        ai_text = response.choices[0].message.content.strip()
+        ai_text = result["content"]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Tree insight AI failed: {e}")
         raise HTTPException(status_code=502, detail=f"AI analysis failed: {str(e)}")
@@ -358,7 +433,7 @@ Provide a comprehensive analysis covering:
         scope="tree",
         user_prompt=payload.user_prompt,
         ai_response=ai_text,
-        model_used=settings.deepseek_model,
+        model_used=result["model_used"],
     )
 
     # Extract and validate DOIs from AI response
@@ -479,9 +554,6 @@ def advanced_report(experiment_id: int, payload: AdvancedReportRequest, db: Sess
     if exp.status != ExperimentStatus.COMPLETE:
         raise HTTPException(status_code=400, detail="Pipeline must complete first")
 
-    client_ai = _get_client()
-    settings = get_settings()
-
     newick = _get_tree_context(experiment_id)
     taxa_ctx = _get_taxon_meta_context(experiment_id, db)
     features_ctx = _get_features_context(experiment_id)
@@ -573,16 +645,17 @@ List ALL cited DOIs with full citation."""
         user_prompt += f"\n\n**Additional focus requested:** {payload.user_prompt}"
 
     try:
-        response = client_ai.chat.completions.create(
-            model=settings.deepseek_model,
+        result = _call_model(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.3,
-            max_tokens=8000,
+            purpose="reasoning", temperature=0.3, max_tokens=8000,
+            model=getattr(payload, 'model', None),
         )
-        ai_text = response.choices[0].message.content.strip()
+        ai_text = result["content"]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Advanced report AI failed: {e}")
         raise HTTPException(status_code=502, detail=f"AI report generation failed: {str(e)}")
@@ -595,7 +668,7 @@ List ALL cited DOIs with full citation."""
         scope="advanced_report",
         user_prompt=payload.user_prompt,
         ai_response=ai_text,
-        model_used=settings.deepseek_model,
+        model_used=result["model_used"],
         doi_references=[ref.model_dump() for ref in doi_refs] if doi_refs else [],
     )
     db.add(insight)
@@ -687,9 +760,6 @@ def alignment_report(experiment_id: int, payload: AlignmentReportRequest, db: Se
         raise HTTPException(status_code=404, detail="Experiment not found")
     if exp.status != ExperimentStatus.COMPLETE:
         raise HTTPException(status_code=400, detail="Pipeline must complete first")
-
-    client_ai = _get_client()
-    settings = get_settings()
 
     alignment_detail = _get_alignment_detailed(experiment_id)
     taxa_ctx = _get_taxon_meta_context(experiment_id, db)
@@ -785,16 +855,17 @@ Full citation list with validated DOIs."""
         user_prompt += f"\n\n**Additional focus requested:** {payload.user_prompt}"
 
     try:
-        response = client_ai.chat.completions.create(
-            model=settings.deepseek_model,
+        result = _call_model(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.3,
-            max_tokens=8000,
+            purpose="reasoning", temperature=0.3, max_tokens=8000,
+            model=getattr(payload, 'model', None),
         )
-        ai_text = response.choices[0].message.content.strip()
+        ai_text = result["content"]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Alignment report AI failed: {e}")
         raise HTTPException(status_code=502, detail=f"AI alignment report failed: {str(e)}")
@@ -807,7 +878,7 @@ Full citation list with validated DOIs."""
         scope="alignment_report",
         user_prompt=payload.user_prompt,
         ai_response=ai_text,
-        model_used=settings.deepseek_model,
+        model_used=result["model_used"],
         doi_references=[ref.model_dump() for ref in doi_refs] if doi_refs else [],
     )
     db.add(insight)
@@ -833,9 +904,6 @@ def alignment_chat(experiment_id: int, payload: AlignmentChatRequest, db: Sessio
         raise HTTPException(status_code=404, detail="Experiment not found")
     if exp.status != ExperimentStatus.COMPLETE:
         raise HTTPException(status_code=400, detail="Pipeline must complete first")
-
-    client_ai = _get_client()
-    settings = get_settings()
 
     alignment_detail = _get_alignment_detailed(experiment_id)
     taxa_ctx = _get_taxon_meta_context(experiment_id, db)
@@ -877,13 +945,14 @@ RULES:
     messages.append({"role": "user", "content": payload.user_prompt})
 
     try:
-        response = client_ai.chat.completions.create(
-            model=settings.deepseek_model,
+        result = _call_model(
             messages=messages,
-            temperature=0.4,
-            max_tokens=4000,
+            purpose="chat", temperature=0.4, max_tokens=4000,
+            model=getattr(payload, 'model', None),
         )
-        ai_text = response.choices[0].message.content.strip()
+        ai_text = result["content"]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Alignment chat AI failed: {e}")
         raise HTTPException(status_code=502, detail=f"AI chat failed: {str(e)}")
@@ -896,7 +965,7 @@ RULES:
         scope="alignment_chat",
         user_prompt=payload.user_prompt,
         ai_response=ai_text,
-        model_used=settings.deepseek_model,
+        model_used=result["model_used"],
         doi_references=[ref.model_dump() for ref in doi_refs] if doi_refs else None,
     )
     db.add(insight)
@@ -913,9 +982,6 @@ def stats_report(experiment_id: int, payload: StatsReportRequest, db: Session = 
         raise HTTPException(status_code=404, detail="Experiment not found")
     if exp.status != ExperimentStatus.COMPLETE:
         raise HTTPException(status_code=400, detail="Pipeline must complete first")
-
-    client_ai = _get_client()
-    settings = get_settings()
 
     features_ctx = _get_features_context(experiment_id)
     taxa_ctx = _get_taxon_meta_context(experiment_id, db)
@@ -1018,16 +1084,17 @@ Full citation list with validated DOIs."""
         user_prompt += f"\n\n**Additional focus requested:** {payload.user_prompt}"
 
     try:
-        response = client_ai.chat.completions.create(
-            model=settings.deepseek_model,
+        result = _call_model(
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.3,
-            max_tokens=8000,
+            purpose="reasoning", temperature=0.3, max_tokens=8000,
+            model=getattr(payload, 'model', None),
         )
-        ai_text = response.choices[0].message.content.strip()
+        ai_text = result["content"]
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Stats report AI failed: {e}")
         raise HTTPException(status_code=502, detail=f"AI stats report failed: {str(e)}")
@@ -1040,7 +1107,7 @@ Full citation list with validated DOIs."""
         scope="stats_report",
         user_prompt=payload.user_prompt,
         ai_response=ai_text,
-        model_used=settings.deepseek_model,
+        model_used=result["model_used"],
         doi_references=[ref.model_dump() for ref in doi_refs] if doi_refs else [],
     )
     db.add(insight)
@@ -1056,3 +1123,235 @@ Full citation list with validated DOIs."""
         model_used=insight.model_used,
         created_at=insight.created_at,
     )
+
+
+# ── New endpoints: models, cached analysis, chart analysis ──
+
+
+@router.get("/models", response_model=list[ModelInfo])
+def list_models():
+    """List all available AI models with their capabilities."""
+    settings = get_settings()
+    models = []
+
+    if settings.deepseek_api_key:
+        models.append(ModelInfo(
+            id="deepseek-chat", label="DeepSeek Chat", provider="deepseek",
+            type="chat", is_default=(settings.default_chat_model == "deepseek-chat"),
+        ))
+        models.append(ModelInfo(
+            id="deepseek-reasoner", label="DeepSeek Reasoner", provider="deepseek",
+            type="reasoning", is_default=(settings.default_reasoning_model == "deepseek-reasoner"),
+        ))
+
+    if settings.openai_api_key:
+        models.append(ModelInfo(
+            id="gpt-4o-mini", label="GPT-4o Mini", provider="openai",
+            type="chat", is_default=(settings.default_chat_model == "gpt-4o-mini"),
+        ))
+        models.append(ModelInfo(
+            id="gpt-4o", label="GPT-4o", provider="openai",
+            type="reasoning", is_default=False,
+        ))
+
+    return models
+
+
+@router.get("/models/{model_id}/health")
+def model_health(model_id: str):
+    """Quick health check for a specific model."""
+    try:
+        result = _call_model(
+            messages=[{"role": "user", "content": "Reply OK"}],
+            model=model_id, purpose="chat", temperature=0.0, max_tokens=10,
+        )
+        return {"model": model_id, "status": "healthy", "response": result["content"][:50]}
+    except Exception as e:
+        return {"model": model_id, "status": "unhealthy", "error": str(e)}
+
+
+@router.get("/experiments/{experiment_id}/cached-analysis", response_model=CachedAnalysisResponse)
+def cached_analysis(experiment_id: int, scope: str, db: Session = Depends(get_db)):
+    """Get cached AI analysis, or generate and cache if not found."""
+    exp = db.query(Experiment).filter(Experiment.id == experiment_id).first()
+    if not exp:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    if exp.status != ExperimentStatus.COMPLETE:
+        raise HTTPException(status_code=400, detail="Pipeline must complete first")
+
+    # Check for existing cached analysis
+    existing = db.query(TaxonInsight).filter(
+        TaxonInsight.experiment_id == experiment_id,
+        TaxonInsight.scope == scope,
+    ).order_by(TaxonInsight.created_at.desc()).first()
+
+    if existing:
+        doi_refs = []
+        if existing.doi_references:
+            doi_refs = [DOIReference(**r) if isinstance(r, dict) else r for r in existing.doi_references]
+        return CachedAnalysisResponse(
+            cached=True,
+            insight=InsightResponse(
+                id=existing.id, experiment_id=existing.experiment_id,
+                accession=existing.accession, scope=existing.scope,
+                user_prompt=existing.user_prompt, ai_response=existing.ai_response,
+                model_used=existing.model_used, doi_references=doi_refs,
+                created_at=existing.created_at,
+            ),
+        )
+
+    # Generate based on scope
+    scope_prompts = {
+        "stats_auto": ("Provide a comprehensive statistical analysis summary.", _get_features_context, "reasoning"),
+        "alignment_auto": ("Provide a comprehensive MSA analysis summary.", _get_alignment_detailed, "reasoning"),
+        "tree_auto": ("Provide a comprehensive phylogenetic tree analysis summary.", _get_tree_context, "reasoning"),
+    }
+
+    # Chart-specific scopes
+    if scope.startswith("chart_"):
+        return _generate_chart_cached(experiment_id, scope, exp, db)
+
+    if scope not in scope_prompts:
+        raise HTTPException(status_code=400, detail=f"Unknown scope: {scope}")
+
+    focus, context_fn, purpose = scope_prompts[scope]
+    context = context_fn(experiment_id)
+    taxa_ctx = _get_taxon_meta_context(experiment_id, db)
+
+    system_prompt = """You are a world-class bioinformatics expert. Provide a clear, rigorous scientific analysis.
+Include real DOI references. Format: [Author et al., Year](https://doi.org/DOI_HERE). Use markdown."""
+
+    user_prompt = f"""Analyze this data for experiment: {exp.name} (Query: {exp.query}, Organism: {exp.organism or 'All'})
+
+{focus}
+
+Data:
+{context}
+
+Taxa:
+{taxa_ctx}"""
+
+    result = _call_model(
+        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        purpose=purpose, temperature=0.3, max_tokens=6000,
+    )
+
+    doi_refs = _extract_and_validate_dois(result["content"])
+
+    insight = TaxonInsight(
+        experiment_id=experiment_id, accession=None, scope=scope,
+        user_prompt=None, ai_response=result["content"],
+        model_used=result["model_used"],
+        doi_references=[ref.model_dump() for ref in doi_refs] if doi_refs else [],
+    )
+    db.add(insight)
+    db.commit()
+    db.refresh(insight)
+
+    return CachedAnalysisResponse(
+        cached=False,
+        insight=InsightResponse(
+            id=insight.id, experiment_id=insight.experiment_id,
+            accession=insight.accession, scope=insight.scope,
+            user_prompt=insight.user_prompt, ai_response=insight.ai_response,
+            model_used=insight.model_used, doi_references=doi_refs,
+            created_at=insight.created_at,
+        ),
+    )
+
+
+def _generate_chart_cached(experiment_id: int, scope: str, exp: Experiment, db: Session) -> CachedAnalysisResponse:
+    """Generate and cache chart-specific AI analysis."""
+    chart_type = scope.replace("chart_", "")
+    features_ctx = _get_features_context(experiment_id)
+    taxa_ctx = _get_taxon_meta_context(experiment_id, db)
+
+    chart_prompts = {
+        "length_distribution": "Analyze the sequence length distribution. Discuss outliers, central tendency, and what the distribution shape suggests about this protein family.",
+        "aa_composition": "Analyze the amino acid composition patterns. Identify over/under-represented residues and their functional implications.",
+        "hydrophobic_charged": "Analyze the hydrophobic vs charged fraction distribution. Discuss what this reveals about protein structure and membrane association.",
+        "distance_matrix": "Analyze the pairwise distance matrix. Discuss clustering patterns, outliers, and evolutionary divergence.",
+        "entropy": "Analyze the Shannon entropy per position. Identify highly variable and highly conserved regions and their biological significance.",
+        "taxonomy": "Analyze the taxonomic distribution. Discuss diversity, dominant genera, and representation gaps.",
+        "lengths": "Analyze the sequence length variation across taxa. Discuss how length relates to function and taxonomy.",
+        "features": "Analyze the computed biochemical features. Discuss hydrophobicity, charge, and molecular weight patterns.",
+    }
+
+    prompt = chart_prompts.get(chart_type, f"Analyze the {chart_type} data and provide key scientific insights.")
+
+    system_prompt = """You are a bioinformatics expert. Provide a focused 2-3 paragraph analysis of this specific chart/metric.
+Be precise, reference actual numbers, and suggest what the pattern means biologically.
+Include 1-2 DOI references if relevant. Format: [Author et al., Year](https://doi.org/DOI_HERE)."""
+
+    user_prompt = f"""Experiment: {exp.name} (Query: {exp.query})
+
+{prompt}
+
+Data:
+{features_ctx}
+
+Taxa:
+{taxa_ctx}"""
+
+    result = _call_model(
+        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+        purpose="chat", temperature=0.3, max_tokens=2000,
+    )
+
+    doi_refs = _extract_and_validate_dois(result["content"])
+
+    insight = TaxonInsight(
+        experiment_id=experiment_id, accession=None, scope=scope,
+        user_prompt=None, ai_response=result["content"],
+        model_used=result["model_used"],
+        doi_references=[ref.model_dump() for ref in doi_refs] if doi_refs else [],
+    )
+    db.add(insight)
+    db.commit()
+    db.refresh(insight)
+
+    return CachedAnalysisResponse(
+        cached=False,
+        insight=InsightResponse(
+            id=insight.id, experiment_id=insight.experiment_id,
+            accession=insight.accession, scope=insight.scope,
+            user_prompt=insight.user_prompt, ai_response=insight.ai_response,
+            model_used=insight.model_used, doi_references=doi_refs,
+            created_at=insight.created_at,
+        ),
+    )
+
+
+@router.post("/experiments/{experiment_id}/chart-analysis", response_model=CachedAnalysisResponse)
+def chart_analysis(experiment_id: int, payload: ChartAnalysisRequest, db: Session = Depends(get_db)):
+    """Generate focused AI analysis for a specific chart type."""
+    exp = db.query(Experiment).filter(Experiment.id == experiment_id).first()
+    if not exp:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    if exp.status != ExperimentStatus.COMPLETE:
+        raise HTTPException(status_code=400, detail="Pipeline must complete first")
+
+    scope = f"chart_{payload.chart_type}"
+
+    # Check cache first
+    existing = db.query(TaxonInsight).filter(
+        TaxonInsight.experiment_id == experiment_id,
+        TaxonInsight.scope == scope,
+    ).order_by(TaxonInsight.created_at.desc()).first()
+
+    if existing and not payload.force_refresh:
+        doi_refs = []
+        if existing.doi_references:
+            doi_refs = [DOIReference(**r) if isinstance(r, dict) else r for r in existing.doi_references]
+        return CachedAnalysisResponse(
+            cached=True,
+            insight=InsightResponse(
+                id=existing.id, experiment_id=existing.experiment_id,
+                accession=existing.accession, scope=existing.scope,
+                user_prompt=existing.user_prompt, ai_response=existing.ai_response,
+                model_used=existing.model_used, doi_references=doi_refs,
+                created_at=existing.created_at,
+            ),
+        )
+
+    return _generate_chart_cached(experiment_id, scope, exp, db)

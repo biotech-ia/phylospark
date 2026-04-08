@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { ZoomIn, ZoomOut, Maximize2, Search, BarChart3, Eye, EyeOff, Download, ArrowUpDown, Filter, Layers, Activity, Hash, Grid3X3, Crosshair, FileText } from 'lucide-react'
 import Plot from 'react-plotly.js'
+import InlineAIInsight from './InlineAIInsight'
 
 const AA_COLORS = {
   A: '#2563eb', V: '#2563eb', I: '#2563eb', L: '#2563eb', M: '#2563eb',
@@ -20,7 +21,7 @@ const AA_GROUPS = {
   Special: { chars: 'CGY', color: '#d97706', bg: '#fef3c7' },
 }
 
-export default function AlignmentViewer({ alignmentData, conservationData }) {
+export default function AlignmentViewer({ alignmentData, conservationData, experimentId }) {
   const containerRef = useRef(null)
   const canvasRef = useRef(null)
   const [zoom, setZoom] = useState(1)
@@ -31,14 +32,15 @@ export default function AlignmentViewer({ alignmentData, conservationData }) {
   const [hoveredCell, setHoveredCell] = useState(null)
   const [colorMode, setColorMode] = useState('property')
   const [sortMode, setSortMode] = useState('original')
-  const [showEntropy, setShowEntropy] = useState(false)
-  const [showGapMap, setShowGapMap] = useState(false)
+  const [showEntropy, setShowEntropy] = useState(true)
+  const [showGapMap, setShowGapMap] = useState(true)
   const [highlightConserved, setHighlightConserved] = useState(false)
   const [conservedThreshold, setConservedThreshold] = useState(0.8)
-  const [showAAFreq, setShowAAFreq] = useState(false)
-  const [showIdentityMatrix, setShowIdentityMatrix] = useState(false)
+  const [showAAFreq, setShowAAFreq] = useState(true)
+  const [showIdentityMatrix, setShowIdentityMatrix] = useState(true)
   const [selectedRegion, setSelectedRegion] = useState(null)
   const [regionStart, setRegionStart] = useState(null)
+  const [hoverColumn, setHoverColumn] = useState(null)
 
   const sequences = useMemo(() => {
     if (!alignmentData) return []
@@ -323,7 +325,17 @@ export default function AlignmentViewer({ alignmentData, conservationData }) {
         ctx.fillText(`${col + 1}`, x - 4, yOffset - 2)
       }
     }
-  }, [sequences, conservation, consensusSeq, zoom, showConservation, showConsensus, colorMode, searchResults, hoveredCell, charW, charH, labelW, consHeight, consensusH, sortedIndices, highlightConserved, conservedThreshold, selectedRegion])
+
+    // Vertical column highlight on hover
+    if (hoverColumn !== null && hoverColumn >= 0 && hoverColumn < conservation.length) {
+      const hx = labelW + hoverColumn * charW
+      ctx.fillStyle = 'rgba(99, 102, 241, 0.12)'
+      ctx.fillRect(hx, 0, charW, canvas.height)
+      ctx.strokeStyle = 'rgba(99, 102, 241, 0.3)'
+      ctx.lineWidth = 1
+      ctx.strokeRect(hx, 0, charW, canvas.height)
+    }
+  }, [sequences, conservation, consensusSeq, zoom, showConservation, showConsensus, colorMode, searchResults, hoveredCell, charW, charH, labelW, consHeight, consensusH, sortedIndices, highlightConserved, conservedThreshold, selectedRegion, hoverColumn])
 
   // Mouse tracking
   const handleMouseMove = useCallback((e) => {
@@ -332,15 +344,16 @@ export default function AlignmentViewer({ alignmentData, conservationData }) {
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
     const yOff = (showConservation ? 60 : 0) + (showConsensus ? charH : 0)
-    if (x < labelW || y < yOff) { setHoveredCell(null); return }
+    if (x < labelW || y < yOff) { setHoveredCell(null); setHoverColumn(null); return }
     const col = Math.floor((x - labelW) / charW)
     const row = Math.floor((y - yOff) / charH)
+    setHoverColumn(col >= 0 && col < conservation.length ? col : null)
     if (row >= 0 && row < sequences.length && col >= 0) {
       setHoveredCell({ row, col })
     } else {
       setHoveredCell(null)
     }
-  }, [sequences, charW, charH, labelW, showConservation, showConsensus])
+  }, [sequences, charW, charH, labelW, showConservation, showConsensus, conservation.length])
 
   // Region selection via canvas clicks
   const handleCanvasClick = useCallback((e) => {
@@ -504,134 +517,7 @@ export default function AlignmentViewer({ alignmentData, conservationData }) {
         </div>
       )}
 
-      {/* Shannon Entropy plot */}
-      {showEntropy && entropy.length > 0 && entropy.length <= 2000 && (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/50">
-            <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-              <Activity size={14} className="text-cyan-500" /> Shannon Entropy per Position
-              <span className="text-[10px] text-gray-400">(higher = more variable)</span>
-            </h4>
-          </div>
-          <div className="p-2">
-            <Plot
-              data={[{
-                x: entropy.map(e => e.position), y: entropy.map(e => e.entropy),
-                type: 'scatter', mode: 'lines', fill: 'tozeroy',
-                line: { color: '#06b6d4', width: 1 }, fillcolor: 'rgba(6,182,212,0.15)',
-                hovertemplate: 'Pos %{x}<br>Entropy: %{y:.3f} bits<extra></extra>',
-              }]}
-              layout={{
-                height: 140, margin: { t: 5, b: 30, l: 40, r: 10 },
-                xaxis: { title: { text: 'Position', font: { size: 10 } }, tickfont: { size: 9 } },
-                yaxis: { title: { text: 'Entropy (bits)', font: { size: 10 } }, tickfont: { size: 9 } },
-                paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-              }}
-              config={{ displayModeBar: false, responsive: true }}
-              style={{ width: '100%' }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Gap Distribution Heatmap */}
-      {showGapMap && conservation.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/50">
-            <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-              <Grid3X3 size={14} className="text-rose-500" /> Gap Distribution Map
-            </h4>
-          </div>
-          <div className="p-2">
-            <Plot
-              data={[{
-                z: sortedIndices.map(idx => {
-                  const s = sequences[idx].seq
-                  const row = []
-                  for (let i = 0; i < s.length; i++) row.push(s[i] === '-' ? 1 : 0)
-                  return row
-                }),
-                y: sortedIndices.map(idx => sequences[idx].id.slice(0, 15)),
-                type: 'heatmap', colorscale: [[0, '#f0fdf4'], [1, '#ef4444']],
-                showscale: false,
-                hovertemplate: '%{y}<br>Pos: %{x}<br>%{z:d}<extra></extra>',
-              }]}
-              layout={{
-                height: Math.min(400, Math.max(150, sequences.length * 16)),
-                margin: { t: 5, b: 30, l: 120, r: 10 },
-                xaxis: { title: { text: 'Position', font: { size: 10 } } },
-                paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-              }}
-              config={{ displayModeBar: false, responsive: true }}
-              style={{ width: '100%' }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* AA Frequency Distribution */}
-      {showAAFreq && aaFrequency.length > 0 && (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/50">
-            <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-              <Hash size={14} className="text-indigo-500" /> Amino Acid Frequency Distribution
-            </h4>
-          </div>
-          <div className="p-2">
-            <Plot
-              data={[{
-                x: aaFrequency.map(a => a.aa), y: aaFrequency.map(a => a.freq * 100),
-                type: 'bar',
-                marker: { color: aaFrequency.map(a => AA_COLORS[a.aa] || '#9ca3af'), opacity: 0.8 },
-                text: aaFrequency.map(a => `${(a.freq * 100).toFixed(1)}%`),
-                textposition: 'outside', textfont: { size: 9 },
-                hovertemplate: '%{x}: %{y:.2f}% (n=%{customdata})<extra></extra>',
-                customdata: aaFrequency.map(a => a.count),
-              }]}
-              layout={{
-                height: 220, margin: { t: 10, b: 40, l: 45, r: 10 },
-                xaxis: { title: { text: 'Amino Acid', font: { size: 10 } } },
-                yaxis: { title: { text: 'Frequency (%)', font: { size: 10 } } },
-                paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-              }}
-              config={{ displayModeBar: false, responsive: true }}
-              style={{ width: '100%' }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Pairwise Identity Matrix */}
-      {showIdentityMatrix && identityMatrix && (
-        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
-          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/50">
-            <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
-              <Layers size={14} className="text-violet-500" /> Pairwise Sequence Identity Matrix (%)
-            </h4>
-          </div>
-          <div className="p-2">
-            <Plot
-              data={[{
-                z: identityMatrix,
-                x: sequences.map(s => s.id.slice(0, 12)),
-                y: sequences.map(s => s.id.slice(0, 12)),
-                type: 'heatmap', colorscale: 'YlGnBu',
-                hovertemplate: '%{y} vs %{x}<br>Identity: %{z:.1f}%<extra></extra>',
-                colorbar: { title: '% Identity', titlefont: { size: 10 } },
-              }]}
-              layout={{
-                height: Math.max(400, sequences.length * 25),
-                margin: { t: 10, b: 100, l: 100, r: 20 },
-                paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
-              }}
-              config={{ displayModeBar: false, responsive: true }}
-              style={{ width: '100%' }}
-            />
-          </div>
-        </div>
-      )}
-
-      {/* Toolbar */}
+      {/* Toolbar + MSA Canvas (moved up, right after conservation) */}
       <div className="bg-white rounded-xl border shadow-sm">
         <div className="p-3 border-b flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-2">
@@ -688,23 +574,9 @@ export default function AlignmentViewer({ alignmentData, conservationData }) {
               <button onClick={() => setShowConsensus(!showConsensus)}
                 className={`p-1.5 rounded-lg text-xs ${showConsensus ? 'bg-blue-100 text-blue-700' : 'bg-gray-100 text-gray-500'}`}
                 title="Toggle consensus row">{showConsensus ? <Eye size={14} /> : <EyeOff size={14} />}</button>
-              <button onClick={() => setShowEntropy(!showEntropy)}
-                className={`p-1.5 rounded-lg text-xs ${showEntropy ? 'bg-cyan-100 text-cyan-700' : 'bg-gray-100 text-gray-500'}`}
-                title="Shannon entropy"><Activity size={14} /></button>
-              <button onClick={() => setShowGapMap(!showGapMap)}
-                className={`p-1.5 rounded-lg text-xs ${showGapMap ? 'bg-rose-100 text-rose-700' : 'bg-gray-100 text-gray-500'}`}
-                title="Gap distribution map"><Grid3X3 size={14} /></button>
-              <button onClick={() => setShowAAFreq(!showAAFreq)}
-                className={`p-1.5 rounded-lg text-xs ${showAAFreq ? 'bg-indigo-100 text-indigo-700' : 'bg-gray-100 text-gray-500'}`}
-                title="AA frequency"><Hash size={14} /></button>
               <button onClick={() => setHighlightConserved(!highlightConserved)}
                 className={`p-1.5 rounded-lg text-xs ${highlightConserved ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}
                 title="Highlight conserved regions"><Crosshair size={14} /></button>
-              {sequences.length <= 50 && (
-                <button onClick={() => setShowIdentityMatrix(!showIdentityMatrix)}
-                  className={`p-1.5 rounded-lg text-xs ${showIdentityMatrix ? 'bg-violet-100 text-violet-700' : 'bg-gray-100 text-gray-500'}`}
-                  title="Pairwise identity matrix"><Layers size={14} /></button>
-              )}
             </div>
 
             {/* Zoom */}
@@ -745,11 +617,11 @@ export default function AlignmentViewer({ alignmentData, conservationData }) {
 
         {/* Canvas viewport */}
         <div ref={containerRef} className="overflow-auto" style={{ maxHeight: '600px', maxWidth: '100%' }}
-          onMouseMove={handleMouseMove} onMouseLeave={() => setHoveredCell(null)}>
+          onMouseMove={handleMouseMove} onMouseLeave={() => { setHoveredCell(null); setHoverColumn(null) }}>
           <canvas ref={canvasRef} className="cursor-crosshair" onClick={handleCanvasClick} />
         </div>
 
-        {/* Enhanced tooltip with entropy + identity */}
+        {/* Enhanced tooltip with entropy + identity + column info */}
         {hoveredCell && sequences[sortedIndices[hoveredCell.row]] && (() => {
           const origIdx = sortedIndices[hoveredCell.row]
           const s = sequences[origIdx]
@@ -762,6 +634,7 @@ export default function AlignmentViewer({ alignmentData, conservationData }) {
                 <>
                   <span><strong>Conservation:</strong> {(conservation[hoveredCell.col].score * 100).toFixed(1)}%</span>
                   <span><strong>Consensus:</strong> {conservation[hoveredCell.col].consensus}</span>
+                  <span><strong>Gap %:</strong> {((conservation[hoveredCell.col].gapFrac || 0) * 100).toFixed(1)}%</span>
                 </>
               )}
               {entropy[hoveredCell.col] && (
@@ -806,6 +679,143 @@ export default function AlignmentViewer({ alignmentData, conservationData }) {
           </div>
         )}
       </div>
+
+      {/* Inline AI Analysis - Alignment Overview */}
+      {experimentId && (
+        <InlineAIInsight experimentId={experimentId} scope="alignment_auto" title="AI Alignment Analysis" />
+      )}
+
+      {/* Shannon Entropy plot (always visible) */}
+      {entropy.length > 0 && entropy.length <= 2000 && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/50">
+            <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+              <Activity size={14} className="text-cyan-500" /> Shannon Entropy per Position
+              <span className="text-[10px] text-gray-400">(higher = more variable)</span>
+            </h4>
+          </div>
+          <div className="p-2">
+            <Plot
+              data={[{
+                x: entropy.map(e => e.position), y: entropy.map(e => e.entropy),
+                type: 'scatter', mode: 'lines', fill: 'tozeroy',
+                line: { color: '#06b6d4', width: 1 }, fillcolor: 'rgba(6,182,212,0.15)',
+                hovertemplate: 'Pos %{x}<br>Entropy: %{y:.3f} bits<extra></extra>',
+              }]}
+              layout={{
+                height: 140, margin: { t: 5, b: 30, l: 40, r: 10 },
+                xaxis: { title: { text: 'Position', font: { size: 10 } }, tickfont: { size: 9 } },
+                yaxis: { title: { text: 'Entropy (bits)', font: { size: 10 } }, tickfont: { size: 9 } },
+                paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+              }}
+              config={{ displayModeBar: false, responsive: true }}
+              style={{ width: '100%' }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Inline AI - Entropy Analysis */}
+      {experimentId && (
+        <InlineAIInsight experimentId={experimentId} scope="chart_entropy" title="AI Entropy Analysis" />
+      )}
+
+      {/* Gap Distribution Heatmap (always visible) */}
+      {conservation.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/50">
+            <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+              <Grid3X3 size={14} className="text-rose-500" /> Gap Distribution Map
+            </h4>
+          </div>
+          <div className="p-2">
+            <Plot
+              data={[{
+                z: sortedIndices.map(idx => {
+                  const s = sequences[idx].seq
+                  const row = []
+                  for (let i = 0; i < s.length; i++) row.push(s[i] === '-' ? 1 : 0)
+                  return row
+                }),
+                y: sortedIndices.map(idx => sequences[idx].id.slice(0, 15)),
+                type: 'heatmap', colorscale: [[0, '#f0fdf4'], [1, '#ef4444']],
+                showscale: false,
+                hovertemplate: '%{y}<br>Pos: %{x}<br>%{z:d}<extra></extra>',
+              }]}
+              layout={{
+                height: Math.min(400, Math.max(150, sequences.length * 16)),
+                margin: { t: 5, b: 30, l: 120, r: 10 },
+                xaxis: { title: { text: 'Position', font: { size: 10 } } },
+                paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+              }}
+              config={{ displayModeBar: false, responsive: true }}
+              style={{ width: '100%' }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* AA Frequency Distribution (always visible) */}
+      {aaFrequency.length > 0 && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/50">
+            <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+              <Hash size={14} className="text-indigo-500" /> Amino Acid Frequency Distribution
+            </h4>
+          </div>
+          <div className="p-2">
+            <Plot
+              data={[{
+                x: aaFrequency.map(a => a.aa), y: aaFrequency.map(a => a.freq * 100),
+                type: 'bar',
+                marker: { color: aaFrequency.map(a => AA_COLORS[a.aa] || '#9ca3af'), opacity: 0.8 },
+                text: aaFrequency.map(a => `${(a.freq * 100).toFixed(1)}%`),
+                textposition: 'outside', textfont: { size: 9 },
+                hovertemplate: '%{x}: %{y:.2f}% (n=%{customdata})<extra></extra>',
+                customdata: aaFrequency.map(a => a.count),
+              }]}
+              layout={{
+                height: 220, margin: { t: 10, b: 40, l: 45, r: 10 },
+                xaxis: { title: { text: 'Amino Acid', font: { size: 10 } } },
+                yaxis: { title: { text: 'Frequency (%)', font: { size: 10 } } },
+                paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+              }}
+              config={{ displayModeBar: false, responsive: true }}
+              style={{ width: '100%' }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* Pairwise Identity Matrix (always visible, max 50 seqs) */}
+      {identityMatrix && (
+        <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-4 py-3 border-b border-gray-100 bg-gray-50/50">
+            <h4 className="text-sm font-semibold text-gray-700 flex items-center gap-2">
+              <Layers size={14} className="text-violet-500" /> Pairwise Sequence Identity Matrix (%)
+            </h4>
+          </div>
+          <div className="p-2">
+            <Plot
+              data={[{
+                z: identityMatrix,
+                x: sequences.map(s => s.id.slice(0, 12)),
+                y: sequences.map(s => s.id.slice(0, 12)),
+                type: 'heatmap', colorscale: 'YlGnBu',
+                hovertemplate: '%{y} vs %{x}<br>Identity: %{z:.1f}%<extra></extra>',
+                colorbar: { title: '% Identity', titlefont: { size: 10 } },
+              }]}
+              layout={{
+                height: Math.max(400, sequences.length * 25),
+                margin: { t: 10, b: 100, l: 100, r: 20 },
+                paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+              }}
+              config={{ displayModeBar: false, responsive: true }}
+              style={{ width: '100%' }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* Conserved Regions Table */}
       {highlightConserved && conservedRegions.length > 0 && (

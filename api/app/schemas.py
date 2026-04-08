@@ -112,9 +112,11 @@ class TaxonMetaResponse(BaseModel):
 class TaxonInsightRequest(BaseModel):
     accession: str
     user_prompt: Optional[str] = None
+    model: Optional[str] = None
 
 class TreeInsightRequest(BaseModel):
     user_prompt: Optional[str] = None
+    model: Optional[str] = None
 
 class DOIReference(BaseModel):
     doi: str
@@ -143,6 +145,7 @@ class InsightListResponse(BaseModel):
 
 class AdvancedReportRequest(BaseModel):
     user_prompt: Optional[str] = None
+    model: Optional[str] = None
 
 class AdvancedReportResponse(BaseModel):
     id: int
@@ -178,6 +181,7 @@ class AlignmentChatMessage(BaseModel):
 class AlignmentChatRequest(BaseModel):
     user_prompt: str
     conversation_history: Optional[list[AlignmentChatMessage]] = None
+    model: Optional[str] = None
 
 class AlignmentChatResponse(BaseModel):
     id: int
@@ -193,6 +197,27 @@ class AlignmentChatResponse(BaseModel):
 
 class AlignmentReportRequest(BaseModel):
     user_prompt: Optional[str] = None
+    model: Optional[str] = None
 
 class StatsReportRequest(BaseModel):
     user_prompt: Optional[str] = None
+    model: Optional[str] = None
+
+
+# ── New schemas for multi-model + caching ──
+
+class ModelInfo(BaseModel):
+    id: str
+    label: str
+    provider: str
+    type: str  # "chat" | "reasoning"
+    is_default: bool = False
+
+class CachedAnalysisResponse(BaseModel):
+    cached: bool
+    insight: InsightResponse
+
+class ChartAnalysisRequest(BaseModel):
+    chart_type: str
+    force_refresh: bool = False
+    model: Optional[str] = None

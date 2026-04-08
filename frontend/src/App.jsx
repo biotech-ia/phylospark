@@ -3,15 +3,20 @@ import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import NewExperiment from './pages/NewExperiment'
 import ExperimentDetail from './pages/ExperimentDetail'
+import FloatingModelSelector from './components/FloatingModelSelector'
+import { ModelProvider } from './contexts/ModelContext'
 
 export default function App() {
   return (
-    <Layout>
-      <Routes>
-        <Route path="/" element={<Dashboard />} />
-        <Route path="/new" element={<NewExperiment />} />
-        <Route path="/experiment/:id" element={<ExperimentDetail />} />
-      </Routes>
-    </Layout>
+    <ModelProvider>
+      <Layout>
+        <Routes>
+          <Route path="/" element={<Dashboard />} />
+          <Route path="/new" element={<NewExperiment />} />
+          <Route path="/experiment/:id" element={<ExperimentDetail />} />
+        </Routes>
+      </Layout>
+      <FloatingModelSelector />
+    </ModelProvider>
   )
 }
