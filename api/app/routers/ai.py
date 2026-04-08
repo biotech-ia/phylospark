@@ -1199,103 +1199,75 @@ def cached_analysis(experiment_id: int, scope: str, db: Session = Depends(get_db
             ),
         )
 
-    # Generate based on scope
-    scope_prompts = {
-        "stats_auto": ("Provide a comprehensive statistical analysis summary.", _get_features_context, "reasoning"),
-        "alignment_auto": ("Provide a comprehensive MSA analysis summary.", _get_alignment_detailed, "reasoning"),
-        "tree_auto": ("Provide a comprehensive phylogenetic tree analysis summary.", _get_tree_context, "reasoning"),
-    }
-
-    # Chart-specific scopes
-    if scope.startswith("chart_"):
-        return _generate_chart_cached(experiment_id, scope, exp, db)
-
-    if scope not in scope_prompts:
-        raise HTTPException(status_code=400, detail=f"Unknown scope: {scope}")
-
-    focus, context_fn, purpose = scope_prompts[scope]
-    context = context_fn(experiment_id)
-    taxa_ctx = _get_taxon_meta_context(experiment_id, db)
-
-    system_prompt = """You are a world-class bioinformatics expert. Provide a clear, rigorous scientific analysis.
-Include real DOI references. Format: [Author et al., Year](https://doi.org/DOI_HERE). Use markdown."""
-
-    user_prompt = f"""Analyze this data for experiment: {exp.name} (Query: {exp.query}, Organism: {exp.organism or 'All'})
-
-{focus}
-
-Data:
-{context}
-
-Taxa:
-{taxa_ctx}"""
-
-    result = _call_model(
-        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-        purpose=purpose, temperature=0.3, max_tokens=6000,
-    )
-
-    doi_refs = _extract_and_validate_dois(result["content"])
-
-    insight = TaxonInsight(
-        experiment_id=experiment_id, accession=None, scope=scope,
-        user_prompt=None, ai_response=result["content"],
-        model_used=result["model_used"],
-        doi_references=[ref.model_dump() for ref in doi_refs] if doi_refs else [],
-    )
-    db.add(insight)
-    db.commit()
-    db.refresh(insight)
-
-    return CachedAnalysisResponse(
-        cached=False,
-        insight=InsightResponse(
-            id=insight.id, experiment_id=insight.experiment_id,
-            accession=insight.accession, scope=insight.scope,
-            user_prompt=insight.user_prompt, ai_response=insight.ai_response,
-            model_used=insight.model_used, doi_references=doi_refs,
-            created_at=insight.created_at,
-        ),
-    )
+    # No cached analysis — return null insight (generation is done via POST chart-analysis)
+    return CachedAnalysisResponse(cached=False, insight=None)
 
 
 def _generate_chart_cached(experiment_id: int, scope: str, exp: Experiment, db: Session) -> CachedAnalysisResponse:
-    """Generate and cache chart-specific AI analysis."""
-    chart_type = scope.replace("chart_", "")
-    features_ctx = _get_features_context(experiment_id)
+    """Generate and cache chart-specific or auto-scope AI analysis."""
     taxa_ctx = _get_taxon_meta_context(experiment_id, db)
 
-    chart_prompts = {
-        "length_distribution": "Analyze the sequence length distribution. Discuss outliers, central tendency, and what the distribution shape suggests about this protein family.",
-        "aa_composition": "Analyze the amino acid composition patterns. Identify over/under-represented residues and their functional implications.",
-        "hydrophobic_charged": "Analyze the hydrophobic vs charged fraction distribution. Discuss what this reveals about protein structure and membrane association.",
-        "distance_matrix": "Analyze the pairwise distance matrix. Discuss clustering patterns, outliers, and evolutionary divergence.",
-        "entropy": "Analyze the Shannon entropy per position. Identify highly variable and highly conserved regions and their biological significance.",
-        "taxonomy": "Analyze the taxonomic distribution. Discuss diversity, dominant genera, and representation gaps.",
-        "lengths": "Analyze the sequence length variation across taxa. Discuss how length relates to function and taxonomy.",
-        "features": "Analyze the computed biochemical features. Discuss hydrophobicity, charge, and molecular weight patterns.",
+    # ── Auto scopes: comprehensive section-level analysis ──
+    auto_configs = {
+        "stats_auto": {
+            "context_fn": lambda: _get_features_context(experiment_id),
+            "prompt": "Provide a comprehensive statistical analysis of this protein dataset. Cover sequence length distribution, amino acid composition patterns, hydrophobicity and charge distributions, and any notable outliers. Identify key biochemical trends and their biological significance.",
+            "system": "You are a bioinformatics expert specializing in protein sequence statistics. Provide a thorough 3-4 paragraph analysis covering key statistical patterns and their biological meaning. Reference actual numbers. Include 2-3 DOI references. Format: [Author et al., Year](https://doi.org/DOI_HERE).",
+            "purpose": "reasoning",
+            "max_tokens": 4000,
+        },
+        "alignment_auto": {
+            "context_fn": lambda: _get_alignment_detailed(experiment_id),
+            "prompt": "Provide a comprehensive analysis of this multiple sequence alignment. Cover conservation patterns, gap distribution, highly conserved motifs, variable regions, and what these patterns reveal about the protein family's evolutionary constraints and functional domains.",
+            "system": "You are a bioinformatics expert specializing in multiple sequence alignment analysis. Provide a thorough 3-4 paragraph analysis of alignment quality, conservation, and evolutionary implications. Reference actual numbers. Include 2-3 DOI references. Format: [Author et al., Year](https://doi.org/DOI_HERE).",
+            "purpose": "reasoning",
+            "max_tokens": 4000,
+        },
+        "tree_auto": {
+            "context_fn": lambda: _get_tree_context(experiment_id),
+            "prompt": "Provide a comprehensive phylogenetic analysis. Discuss tree topology, major clades, branch length patterns, evolutionary relationships, and any interesting groupings or outliers. Relate the tree structure to the taxonomic distribution of the organisms.",
+            "system": "You are a bioinformatics expert specializing in phylogenetics. Provide a thorough 3-4 paragraph analysis of the phylogenetic tree structure and its evolutionary implications. Reference actual numbers. Include 2-3 DOI references. Format: [Author et al., Year](https://doi.org/DOI_HERE).",
+            "purpose": "reasoning",
+            "max_tokens": 4000,
+        },
     }
 
-    prompt = chart_prompts.get(chart_type, f"Analyze the {chart_type} data and provide key scientific insights.")
+    if scope in auto_configs:
+        cfg = auto_configs[scope]
+        data_ctx = cfg["context_fn"]()
+        user_prompt = f"Experiment: {exp.name} (Query: {exp.query})\n\n{cfg['prompt']}\n\nData:\n{data_ctx}\n\nTaxa:\n{taxa_ctx}"
+        result = _call_model(
+            messages=[{"role": "system", "content": cfg["system"]}, {"role": "user", "content": user_prompt}],
+            purpose=cfg["purpose"], temperature=0.3, max_tokens=cfg["max_tokens"],
+        )
+    else:
+        # ── Chart-specific scopes ──
+        chart_type = scope.replace("chart_", "")
+        features_ctx = _get_features_context(experiment_id)
 
-    system_prompt = """You are a bioinformatics expert. Provide a focused 2-3 paragraph analysis of this specific chart/metric.
+        chart_prompts = {
+            "length_distribution": "Analyze the sequence length distribution. Discuss outliers, central tendency, and what the distribution shape suggests about this protein family.",
+            "aa_composition": "Analyze the amino acid composition patterns. Identify over/under-represented residues and their functional implications.",
+            "hydrophobic_charged": "Analyze the hydrophobic vs charged fraction distribution. Discuss what this reveals about protein structure and membrane association.",
+            "distance_matrix": "Analyze the pairwise distance matrix. Discuss clustering patterns, outliers, and evolutionary divergence.",
+            "entropy": "Analyze the Shannon entropy per position. Identify highly variable and highly conserved regions and their biological significance.",
+            "taxonomy": "Analyze the taxonomic distribution. Discuss diversity, dominant genera, and representation gaps.",
+            "lengths": "Analyze the sequence length variation across taxa. Discuss how length relates to function and taxonomy.",
+            "features": "Analyze the computed biochemical features. Discuss hydrophobicity, charge, and molecular weight patterns.",
+        }
+
+        prompt = chart_prompts.get(chart_type, f"Analyze the {chart_type} data and provide key scientific insights.")
+
+        system_prompt = """You are a bioinformatics expert. Provide a focused 2-3 paragraph analysis of this specific chart/metric.
 Be precise, reference actual numbers, and suggest what the pattern means biologically.
 Include 1-2 DOI references if relevant. Format: [Author et al., Year](https://doi.org/DOI_HERE)."""
 
-    user_prompt = f"""Experiment: {exp.name} (Query: {exp.query})
+        user_prompt = f"Experiment: {exp.name} (Query: {exp.query})\n\n{prompt}\n\nData:\n{features_ctx}\n\nTaxa:\n{taxa_ctx}"
 
-{prompt}
-
-Data:
-{features_ctx}
-
-Taxa:
-{taxa_ctx}"""
-
-    result = _call_model(
-        messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-        purpose="chat", temperature=0.3, max_tokens=2000,
-    )
+        result = _call_model(
+            messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+            purpose="chat", temperature=0.3, max_tokens=2000,
+        )
 
     doi_refs = _extract_and_validate_dois(result["content"])
 
@@ -1323,14 +1295,21 @@ Taxa:
 
 @router.post("/experiments/{experiment_id}/chart-analysis", response_model=CachedAnalysisResponse)
 def chart_analysis(experiment_id: int, payload: ChartAnalysisRequest, db: Session = Depends(get_db)):
-    """Generate focused AI analysis for a specific chart type."""
+    """Generate focused AI analysis for a specific chart type or auto scope."""
     exp = db.query(Experiment).filter(Experiment.id == experiment_id).first()
     if not exp:
         raise HTTPException(status_code=404, detail="Experiment not found")
     if exp.status != ExperimentStatus.COMPLETE:
         raise HTTPException(status_code=400, detail="Pipeline must complete first")
 
-    scope = f"chart_{payload.chart_type}"
+    # Determine scope: auto scopes pass as-is, chart types get prefixed
+    auto_scopes = {"stats_auto", "alignment_auto", "tree_auto"}
+    if payload.chart_type in auto_scopes:
+        scope = payload.chart_type
+    elif payload.chart_type.startswith("chart_"):
+        scope = payload.chart_type
+    else:
+        scope = f"chart_{payload.chart_type}"
 
     # Check cache first
     existing = db.query(TaxonInsight).filter(

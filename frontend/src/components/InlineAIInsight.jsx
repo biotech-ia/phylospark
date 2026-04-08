@@ -53,9 +53,10 @@ export default function InlineAIInsight({
     setLoading(true)
     setError(null)
     try {
-      if (scope.startsWith('chart_') && forceRefresh) {
+      if (forceRefresh) {
+        // Always use POST chart-analysis to generate/regenerate (works for all scopes)
         const resp = await ai.chartAnalysis(experimentId, {
-          chart_type: scope.replace('chart_', ''),
+          chart_type: scope,
           force_refresh: true,
           model: modelCtx?.reasoningModel,
         })
@@ -65,7 +66,34 @@ export default function InlineAIInsight({
         setData(resp.data)
       }
     } catch (err) {
+      // Pipeline not complete — hide silently
+      if (err.response?.status === 400) {
+        setData(null)
+        setError(null)
+        return
+      }
       setError(err.response?.data?.detail || 'Analysis failed')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const generateAnalysis = async () => {
+    setLoading(true)
+    setError(null)
+    try {
+      const resp = await ai.chartAnalysis(experimentId, {
+        chart_type: scope,
+        force_refresh: false,
+        model: modelCtx?.reasoningModel,
+      })
+      setData(resp.data)
+    } catch (err) {
+      if (err.response?.status === 400) {
+        setData(null)
+        return
+      }
+      setError(err.response?.data?.detail || 'Generation failed')
     } finally {
       setLoading(false)
     }
@@ -80,6 +108,8 @@ export default function InlineAIInsight({
   if (!loading && !data && !error) return null
 
   const insight = data?.insight
+  // Data loaded but no cached insight yet — show compact generate prompt
+  const showGenerate = data && !data.cached && !insight && !loading && !error
 
   return (
     <div className={`rounded-xl bg-gradient-to-br ${gradientFrom} ${gradientTo} border border-gray-200 overflow-hidden`}>
@@ -130,6 +160,18 @@ export default function InlineAIInsight({
             <div className="text-red-500 text-sm py-2">
               {error}
               <button onClick={() => fetchAnalysis()} className="ml-2 text-indigo-500 underline text-xs">Retry</button>
+            </div>
+          )}
+          {showGenerate && (
+            <div className="py-3 text-center">
+              <button
+                onClick={generateAnalysis}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-indigo-600 bg-indigo-50 hover:bg-indigo-100 rounded-lg transition"
+              >
+                <Brain size={14} />
+                Generate AI Analysis
+              </button>
+              <p className="text-xs text-gray-400 mt-1">Click to generate insights for this section</p>
             </div>
           )}
           {!loading && insight && (

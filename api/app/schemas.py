@@ -215,9 +215,9 @@ class ModelInfo(BaseModel):
 
 class CachedAnalysisResponse(BaseModel):
     cached: bool
-    insight: InsightResponse
+    insight: Optional[InsightResponse] = None
 
 class ChartAnalysisRequest(BaseModel):
-    chart_type: str
+    chart_type: str  # e.g. "entropy", "aa_composition", or auto scopes "stats_auto", "alignment_auto", "tree_auto"
     force_refresh: bool = False
     model: Optional[str] = None
