@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { X, Sparkles, ChevronDown, ChevronUp, RefreshCw, Dna, Info, Brain, Clock, Send } from 'lucide-react'
+import DOIReferences, { DOIBadge } from './DOIReferences'
 
 /* ── Markdown renderer ── */
 function SimpleMarkdown({ text }) {
@@ -209,12 +210,16 @@ export default function TaxonCard({ taxon, meta, insights, onClose, onAiRequest,
                 <div className="p-5">
                   <div className="bg-white rounded-xl border border-gray-100 p-5 shadow-sm">
                     <SimpleMarkdown text={latestInsight.ai_response} />
+                    {latestInsight.doi_references?.length > 0 && (
+                      <DOIReferences references={latestInsight.doi_references} />
+                    )}
                     <div className="flex items-center gap-2 mt-4 pt-3 border-t border-gray-100 text-[11px] text-gray-400">
                       <Brain size={12} />
                       <span>{latestInsight.model_used}</span>
                       <span>·</span>
                       <Clock size={10} />
                       <span>{new Date(latestInsight.created_at).toLocaleString()}</span>
+                      {latestInsight.doi_references?.length > 0 && <DOIBadge references={latestInsight.doi_references} />}
                       {latestInsight.user_prompt && (
                         <span className="ml-auto italic max-w-[200px] truncate">&ldquo;{latestInsight.user_prompt}&rdquo;</span>
                       )}
@@ -255,6 +260,7 @@ export default function TaxonCard({ taxon, meta, insights, onClose, onAiRequest,
                           </summary>
                           <div className="px-4 py-3 border-t border-gray-200 bg-white">
                             <SimpleMarkdown text={ins.ai_response} />
+                            {ins.doi_references?.length > 0 && <DOIReferences references={ins.doi_references} />}
                           </div>
                         </details>
                       ))}

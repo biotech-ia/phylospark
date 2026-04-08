@@ -14,6 +14,7 @@ export const experiments = {
   delete: (id) => api.delete(`/experiments/${id}`),
   getTree: (id) => api.get(`/experiments/${id}/tree`),
   getAlignment: (id) => api.get(`/experiments/${id}/alignment`),
+  getAlignmentStats: (id) => api.get(`/experiments/${id}/alignment-stats`),
   getStats: (id) => api.get(`/experiments/${id}/stats`),
   getLogs: (id) => api.get(`/experiments/${id}/logs`),
   getTaxonMeta: (id) => api.get(`/experiments/${id}/taxon-metadata`),
@@ -29,6 +30,7 @@ export const ai = {
   recommendAlignmentParams: (data) => api.post('/ai/recommend-alignment-params', data),
   taxonInsight: (experimentId, data) => api.post(`/ai/experiments/${experimentId}/taxon-insight`, data),
   treeInsight: (experimentId, data) => api.post(`/ai/experiments/${experimentId}/tree-insight`, data),
+  advancedReport: (experimentId, data = {}) => api.post(`/ai/experiments/${experimentId}/advanced-report`, data),
 }
 
 export function connectExperimentWS(experimentId, onMessage) {

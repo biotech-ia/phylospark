@@ -57,4 +57,5 @@ class TaxonInsight(Base):
     user_prompt = Column(Text, nullable=True)
     ai_response = Column(Text, nullable=False)
     model_used = Column(String(100), nullable=True)
+    doi_references = Column(JSON, nullable=True)  # List of validated DOI references
     created_at = Column(DateTime(timezone=True), server_default=func.now())

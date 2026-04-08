@@ -6,10 +6,12 @@ from app.schemas import (
     ExperimentCreate, ExperimentResponse, ExperimentList,
     TaxonMetaResponse, TaxonMeta,
     InsightListResponse, InsightResponse,
+    AlignmentStatsResponse, ConservationData,
 )
 from app.storage import get_minio_client, download_file
 from app.pipeline import run_pipeline
 from datetime import datetime, timezone
+from collections import Counter
 import json
 import logging
 import threading
@@ -115,6 +117,93 @@ def get_alignment_data(experiment_id: int, db: Session = Depends(get_db)):
         if experiment.metadata_ and "alignment" in experiment.metadata_:
             return {"fasta": experiment.metadata_["alignment"]}
         raise HTTPException(status_code=404, detail="Alignment data not available")
+
+
+@router.get("/{experiment_id}/alignment-stats", response_model=AlignmentStatsResponse)
+def get_alignment_stats(experiment_id: int, db: Session = Depends(get_db)):
+    """Compute conservation scores and consensus from alignment FASTA."""
+    experiment = db.query(Experiment).filter(Experiment.id == experiment_id).first()
+    if not experiment:
+        raise HTTPException(status_code=404, detail="Experiment not found")
+    if experiment.status != ExperimentStatus.COMPLETE:
+        raise HTTPException(status_code=400, detail="Experiment is not complete")
+
+    # Get alignment FASTA
+    fasta_text = None
+    try:
+        client = get_minio_client()
+        key = f"experiments/{experiment_id}/alignment.fasta"
+        data = download_file(client, "phylospark-alignments", key)
+        fasta_text = data.decode("utf-8")
+    except Exception:
+        if experiment.metadata_ and "alignment" in experiment.metadata_:
+            fasta_text = experiment.metadata_["alignment"]
+    if not fasta_text:
+        raise HTTPException(status_code=404, detail="Alignment data not available")
+
+    # Parse FASTA
+    sequences = []
+    current_seq = []
+    for line in fasta_text.strip().split("\n"):
+        if line.startswith(">"):
+            if current_seq:
+                sequences.append("".join(current_seq))
+            current_seq = []
+        else:
+            current_seq.append(line.strip())
+    if current_seq:
+        sequences.append("".join(current_seq))
+
+    if not sequences:
+        raise HTTPException(status_code=404, detail="No sequences in alignment")
+
+    num_seqs = len(sequences)
+    aln_len = max(len(s) for s in sequences)
+
+    # Compute per-column conservation + consensus
+    conservation = []
+    consensus_chars = []
+    total_gaps = 0
+    total_cells = num_seqs * aln_len
+    identity_scores = []
+
+    for pos in range(aln_len):
+        column = []
+        for seq in sequences:
+            ch = seq[pos].upper() if pos < len(seq) else "-"
+            column.append(ch)
+
+        gaps = column.count("-")
+        total_gaps += gaps
+        non_gap = [c for c in column if c != "-"]
+
+        if non_gap:
+            counts = Counter(non_gap)
+            most_common_char, most_common_count = counts.most_common(1)[0]
+            score = most_common_count / len(column)
+            identity_scores.append(score)
+            consensus_chars.append(most_common_char)
+        else:
+            score = 0.0
+            consensus_chars.append("-")
+
+        conservation.append(ConservationData(
+            position=pos + 1,
+            score=round(score, 4),
+            consensus=consensus_chars[-1],
+        ))
+
+    avg_identity = sum(identity_scores) / len(identity_scores) if identity_scores else 0.0
+    gap_pct = (total_gaps / total_cells * 100) if total_cells > 0 else 0.0
+
+    return AlignmentStatsResponse(
+        num_sequences=num_seqs,
+        alignment_length=aln_len,
+        avg_identity=round(avg_identity, 4),
+        gap_percentage=round(gap_pct, 2),
+        conservation=conservation,
+        consensus_sequence="".join(consensus_chars),
+    )
 
 
 @router.get("/{experiment_id}/stats")

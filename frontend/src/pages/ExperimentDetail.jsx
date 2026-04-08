@@ -35,6 +35,9 @@ export default function ExperimentDetail() {
   const [taxonMeta, setTaxonMeta] = useState(null)
   const [insightsList, setInsightsList] = useState([])
   const [aiLoading, setAiLoading] = useState(false)
+  const [advancedReport, setAdvancedReport] = useState(null)
+  const [reportLoading, setReportLoading] = useState(false)
+  const [alignmentStats, setAlignmentStats] = useState(null)
 
   useEffect(() => {
     experiments.get(id).then((res) => {
@@ -92,6 +95,25 @@ export default function ExperimentDetail() {
       setAiLoading(false)
     }
   }
+
+  const handleAdvancedReport = async () => {
+    setReportLoading(true)
+    try {
+      const res = await ai.advancedReport(id, {})
+      setAdvancedReport(res.data)
+      if (res.data) setInsightsList(prev => [res.data, ...prev])
+    } catch (e) {
+      console.error('Advanced report failed:', e)
+    } finally {
+      setReportLoading(false)
+    }
+  }
+
+  // Load alignment stats when alignment tab activates
+  useEffect(() => {
+    if (activeTab !== 'alignment' || exp?.status !== 'complete' || alignmentStats) return
+    experiments.getAlignmentStats(id).then(r => setAlignmentStats(r.data)).catch(() => {})
+  }, [activeTab, exp?.status, id])
 
   const handleRun = async () => {
     const res = await experiments.run(id)
@@ -240,6 +262,10 @@ export default function ExperimentDetail() {
                 onTreeAi={handleTreeAi}
                 loading={aiLoading}
                 taxonMeta={taxonMeta}
+                onAdvancedReport={handleAdvancedReport}
+                reportLoading={reportLoading}
+                advancedReport={advancedReport}
+                features={statsData?.features}
               />
             )}
             {treeData?.newick && (
@@ -258,7 +284,7 @@ export default function ExperimentDetail() {
           <div className="bg-white rounded-xl border shadow-sm p-6">
             <h2 className="text-lg font-semibold text-gray-800 mb-4">Multiple Sequence Alignment</h2>
             {alignmentData?.fasta ? (
-              <AlignmentViewer alignmentData={alignmentData.fasta} />
+              <AlignmentViewer alignmentData={alignmentData.fasta} conservationData={alignmentStats?.conservation} />
             ) : (
               <PlaceholderMessage message="Alignment data not available yet" />
             )}

@@ -116,6 +116,15 @@ class TaxonInsightRequest(BaseModel):
 class TreeInsightRequest(BaseModel):
     user_prompt: Optional[str] = None
 
+class DOIReference(BaseModel):
+    doi: str
+    title: str = ""
+    authors: str = ""
+    journal: str = ""
+    year: Optional[int] = None
+    validated: bool = False
+    url: str = ""
+
 class InsightResponse(BaseModel):
     id: int
     experiment_id: int
@@ -124,9 +133,37 @@ class InsightResponse(BaseModel):
     user_prompt: Optional[str]
     ai_response: str
     model_used: Optional[str]
+    doi_references: Optional[list[DOIReference]] = None
     created_at: datetime
 
     model_config = {"from_attributes": True}
 
 class InsightListResponse(BaseModel):
     insights: list[InsightResponse]
+
+class AdvancedReportRequest(BaseModel):
+    user_prompt: Optional[str] = None
+
+class AdvancedReportResponse(BaseModel):
+    id: int
+    experiment_id: int
+    scope: str
+    ai_response: str
+    doi_references: list[DOIReference]
+    model_used: Optional[str]
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+class ConservationData(BaseModel):
+    position: int
+    score: float
+    consensus: str
+
+class AlignmentStatsResponse(BaseModel):
+    num_sequences: int
+    alignment_length: int
+    avg_identity: float
+    gap_percentage: float
+    conservation: list[ConservationData]
+    consensus_sequence: str
